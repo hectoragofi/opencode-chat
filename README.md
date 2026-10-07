@@ -1,8 +1,8 @@
 # OpenCode Chat
 
-**A polished, ChatGPT-style desktop client for [opencode](https://opencode.ai) — with free models out of the box and real document generation.**
+**A polished, ChatGPT-style desktop client for [opencode](https://opencode.ai) with free models out of the box and real document generation.**
 
-Chat with frontier models through your OpenCode Zen account, ChatGPT Plus/Pro, GitHub Copilot, or any API key — and ask the assistant to produce production-ready **PDFs, Word documents, Excel workbooks, PowerPoint decks, and charts**, delivered as download links directly in the conversation.
+Chat with frontier models through your OpenCode Zen account, ChatGPT Plus/Pro, GitHub Copilot, or any API key, and ask the assistant to produce production-ready **PDFs, Word documents, Excel workbooks, PowerPoint decks, and charts**, delivered as download links directly in the conversation.
 
 > This repository contains the complete source for the OpenCode Chat Windows application: React web UI, Node.js backend server, and Tauri desktop shell.
 
@@ -39,10 +39,10 @@ Chat with frontier models through your OpenCode Zen account, ChatGPT Plus/Pro, G
 
 OpenCode Chat pairs a modern chat interface with the full power of the opencode execution engine. It is designed for users who want:
 
-1. **A familiar chat experience** — threaded conversations, streaming responses, Markdown with GitHub Flavored Markdown tables, KaTeX mathematics, and syntax-highlighted code blocks.
-2. **Model freedom** — start with free models, then connect an OpenCode Zen account or bring existing subscriptions and API keys. Switch models at any time, including mid-conversation.
-3. **Actionable output** — go beyond text answers. The assistant writes and executes Python to generate binary documents (PDF, DOCX, XLSX, PPTX, PNG charts) and returns verified download links.
-4. **Native desktop integration** — a Tauri shell provides a focused, chromeless window, single-instance behavior, splash screen, and signature-verified automatic updates.
+1. **A familiar chat experience:** threaded conversations, streaming responses, Markdown with GitHub Flavored Markdown tables, KaTeX mathematics, and syntax-highlighted code blocks.
+2. **Model freedom:** start with free models, then connect an OpenCode Zen account or bring existing subscriptions and API keys. Switch models at any time, including mid-conversation.
+3. **Actionable output:** go beyond text answers. The assistant writes and executes Python to generate binary documents (PDF, DOCX, XLSX, PPTX, PNG charts) and returns verified download links.
+4. **Native desktop integration:** a Tauri shell provides a focused, chromeless window, single-instance behavior, splash screen, and signature-verified automatic updates.
 
 The backend requires zero manual configuration: on first launch it provisions the opencode engine and Python document toolchain automatically.
 
@@ -56,7 +56,7 @@ The backend requires zero manual configuration: on first launch it provisions th
 |---|---|
 | Threaded chat UI | Sidebar with persistent history, streaming responses, and session sharing via opencode share links. |
 | Rich message rendering | GFM tables, KaTeX math, fenced code blocks, and embedded generated images. |
-| Two personas | **Chat** — general-purpose assistant with document-building skills. **Agent** — full opencode build agent for engineering tasks. |
+| Two personas | **Chat:** general-purpose assistant with document-building skills. **Agent:** full opencode build agent for engineering tasks. |
 | Model picker | Browse and switch models on demand. Supports free-tier models, OpenCode Zen, and custom provider/model identifiers. |
 | Guided onboarding | First-run setup flow for connecting accounts; fully skippable for immediate use with free models. |
 
@@ -151,9 +151,9 @@ Command-line flags and environment variables. Flags take precedence where both a
 | `--web-port` / `OPENCODE_CHAT_PORT` | `8787` | Port serving the chat UI. Falls back to a free port if occupied. |
 | `--opencode-port` / `OPENCODE_PORT` | `4096` | Port for the managed `opencode serve` instance. Falls back to a free port if occupied. |
 | `--workspace` | `./workspace` (dev) · `Documents\OpenCode Chat` (packaged exe) | Workspace root: agent definition, configuration, and generated files. |
-| `--open` | — | Open the UI in the default browser after boot. |
-| `--app` | — | Open the UI in a chromeless app window with an isolated browser profile. Implied for packaged builds. |
-| `--sidecar` | — | Tauri sidecar mode. Reports the URL on stdout and exits on parent shutdown. |
+| `--open` | None | Open the UI in the default browser after boot. |
+| `--app` | None | Open the UI in a chromeless app window with an isolated browser profile. Implied for packaged builds. |
+| `--sidecar` | None | Tauri sidecar mode. Reports the URL on stdout and exits on parent shutdown. |
 | `OPENCODE_BIN` | Auto-detected | Explicit path to the opencode executable. |
 | `OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` | `opencode` / unset | Forwarded to `opencode serve` as HTTP Basic authentication. |
 
@@ -197,7 +197,7 @@ To customize assistant behavior, edit `template/chat-agent.md` and restart. The 
 The Tauri shell (`desktop/`) delivers the native Windows experience:
 
 - Native window without browser chrome, with splash screen during engine boot.
-- Single-instance enforcement — relaunching focuses the existing window.
+- Single-instance enforcement: relaunching focuses the existing window.
 - Fixed-port coordination with automatic fallback when the preferred port is in use.
 - Clean process teardown: closing the window terminates the sidecar server.
 
@@ -251,7 +251,7 @@ gh release create v1.1.3 --title v1.1.3 --notes "..." --draft <assets>
 #    Review the draft release, then publish: gh release edit v1.1.3 --draft=false
 ```
 
-Publishing is what activates the update feed — installed applications poll `releases/latest/download/latest.json`.
+Publishing is what activates the update feed: installed applications poll `releases/latest/download/latest.json`.
 
 **One-time repository setup** (Settings → Secrets → Actions; required only if the CI fallback is revived):
 
@@ -322,19 +322,19 @@ opencode-chat/
 
 ## Slop Disclaimer
 
-OpenCode Chat is powered by large language models — including free-tier models that may collect prompts, hallucinate facts, and occasionally produce generic, low-effort filler ("slop").
+OpenCode Chat is powered by large language models, including free-tier models that may collect prompts, hallucinate facts, and occasionally produce generic, low-effort filler ("slop").
 
 - **Verify before you trust.** AI output can be confidently wrong. Double-check facts, figures, citations, and any generated documents before sharing or acting on them.
-- **Review generated files.** Spreadsheets, reports, and decks are drafts, not finished work — inspect formulas, totals, and wording before sending them anywhere important.
+- **Review generated files.** Spreadsheets, reports, and decks are drafts, not finished work. Inspect formulas, totals, and wording before sending them anywhere important.
 - **Free models have trade-offs.** They are convenient and $0, but expect variable quality, rate limits, and region blocks. Switch to a stronger model when accuracy matters.
 - **You are the editor-in-chief.** The assistant does the heavy lifting; final judgment is yours.
 
-> In short: yes, this is slop software — but at least it works.
+> In short: yes, this is slop software, but at least it works.
 
 ---
 
 ## License and Acknowledgements
 
-Distributed under the **MIT License** — see [LICENSE](LICENSE) for the full text.
+Distributed under the **MIT License:** see [LICENSE](LICENSE) for the full text.
 
 Built with and upon outstanding open-source software, including [opencode](https://opencode.ai) and [assistant-ui](https://github.com/Yonomitt/assistant-ui). This project is an independent client and is not affiliated with or endorsed by those projects.
