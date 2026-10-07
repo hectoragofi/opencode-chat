@@ -329,6 +329,8 @@ OpenCode Chat is powered by large language models — including free-tier models
 - **Free models have trade-offs.** They are convenient and $0, but expect variable quality, rate limits, and region blocks. Switch to a stronger model when accuracy matters.
 - **You are the editor-in-chief.** The assistant does the heavy lifting; final judgment is yours.
 
+> In short: yes, this is slop software — but at least it works.
+
 ---
 
 ## License and Acknowledgements
