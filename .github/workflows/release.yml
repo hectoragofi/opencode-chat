@@ -136,7 +136,11 @@ jobs:
           # feed URL matches the uploaded file exactly.
           $zipName = ($setup.BaseName + ".nsis.zip") -replace ' ', '.'
           $zip = Join-Path $nsisDir $zipName
-          python -c "import zipfile,sys; src,dst,arc = sys.argv[1],sys.argv[2],sys.argv[3]; zipfile.ZipFile(dst,'w',zipfile.ZIP_STORED).write(src,arc)" "$($setup.FullName)" "$zip" "$zipName"
+          # The updater extracts the zip and runs the top-level .exe it finds
+          # inside, so the installer must be stored under its real .exe name
+          # (a .nsis.zip entry finds nothing -> "binary for the current
+          # target not found in the archive").
+          python -c "import zipfile,sys; src,dst = sys.argv[1],sys.argv[2]; import os; zipfile.ZipFile(dst,'w',zipfile.ZIP_STORED).write(src,os.path.basename(src))" "$($setup.FullName)" "$zip"
           $zipFull = (Resolve-Path $zip).Path
           cd desktop
           npx tauri signer sign "$zipFull"
