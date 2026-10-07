@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+web/node_modules/
+desktop/node_modules/
+workspace/.opencode/node_modules/
+
+# Build output (regenerate with `npm run build` in web/)
+# NOTE: web/public/ holds real sources (e.g. favicon) — only the
+# generated output in public/ is ignored.
+public/
+dist/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
+
+# Dev runtime workspace (recreated from template/ on start)
+workspace/
+scratch/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env / secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tauri / Rust
+**/*.rs.bk

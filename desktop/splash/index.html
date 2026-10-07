@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>OpenCode Chat</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b0b0b; color: #e8e8e8;
+        font: 14px system-ui, -apple-system, "Segoe UI", sans-serif; }
+      body { display: flex; align-items: center; justify-content: center; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #e8e8e8;
+        margin-right: 10px; animation: pulse 1s ease-in-out infinite alternate; }
+      @keyframes pulse { from { opacity: .25 } to { opacity: 1 } }
+      p { margin: 0; opacity: .7; }
+    </style>
+  </head>
+  <body><span class="dot"></span><p id="msg">Starting OpenCode Chat…</p></body>
+</html>

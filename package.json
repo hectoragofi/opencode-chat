@@ -1,0 +1,20 @@
+{
+  "name": "opencode-chat",
+  "version": "1.0.0",
+  "description": "ChatGPT-style web GUI that hijacks opencode serve and chats with free models",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs --open",
+    "build:exe": "node build-exe.mjs",
+    "app": "node server.mjs --app",
+    "build:desktop": "node build-exe.mjs && node -e \"require('fs').copyFileSync('dist/OpenCodeChat.exe','desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe')\" && cd desktop && npx tauri build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
+    "rcedit": "^5.0.2"
+  }
+}
