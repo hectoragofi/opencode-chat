@@ -118,7 +118,7 @@ Releases are built **locally** (warm build cache, no CI roulette):
 node -e "for (const f of ['package.json','desktop/src-tauri/tauri.conf.json']) { const j=require('./'+f); j.version='1.1.3'; require('fs').writeFileSync(f, JSON.stringify(j,null,2)+'\n'); }"
 #    + bump `version` in desktop/src-tauri/Cargo.toml to match
 
-# 2. Build (UPDATE_TOKEN = read-only PAT for the private release feed)
+# 2. Build (the release feed is public, no auth needed)
 cd web && npm run build && cd ..
 npm run build:exe
 cp dist/OpenCodeChat.exe desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe
@@ -138,13 +138,13 @@ gh release create v1.1.3 --title v1.1.3 --notes "..." --draft <assets>
 Publishing is what makes installed apps offer the update (they poll
 `releases/latest/download/latest.json`).
 
-One-time setup (repo Settings → Secrets → Actions):
+One-time setup (repo Settings → Secrets → Actions), only needed if you
+revive the CI workflow:
 
 | Secret | Value |
 |---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | Full contents of the updater private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password |
-| `UPDATE_PAT` | Fine-grained PAT, **contents:read on this repo only** — baked into the app at build time so it can poll releases on this private repo |
 
 The signing keys live **outside** the repo in `~/.tauri/` (never commit them).
 If they are lost, generate new ones with `npx tauri signer generate`, put the
