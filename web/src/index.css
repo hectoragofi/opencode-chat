@@ -18,8 +18,8 @@ body,
 }
 
 body {
-  background: #212121;
-  color: #ececec;
+  background: var(--background);
+  color: var(--foreground);
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.55;
@@ -35,9 +35,12 @@ body {
   overscroll-behavior: contain;
 }
 
-/* slim dark scrollbars */
+/* slim scrollbars */
 * {
   scrollbar-width: thin;
+  scrollbar-color: #c9c9c9 transparent;
+}
+.dark * {
   scrollbar-color: #4a4a4a transparent;
 }
 *::-webkit-scrollbar {
@@ -45,8 +48,11 @@ body {
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #4a4a4a;
+  background: #c9c9c9;
   border-radius: 8px;
+}
+.dark *::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
 }
 
 /* markdown body (assistant-ui MarkdownTextPrimitive output) */
@@ -64,12 +70,16 @@ body {
   margin: 0.5em 0;
 }
 .aui-md pre {
-  background: #0d0d0d;
-  border: 1px solid #424242;
+  background: #f4f4f4;
+  border: 1px solid #e2e2e2;
   border-radius: 10px;
   padding: 12px;
   overflow-x: auto;
   margin: 0.6em 0;
+}
+.dark .aui-md pre {
+  background: #0d0d0d;
+  border-color: #424242;
 }
 .aui-md code {
   font-family: var(--font-mono);
@@ -80,9 +90,12 @@ body {
   padding: 0;
 }
 .aui-md :not(pre) > code {
-  background: #383838;
+  background: #e9e9e9;
   padding: 1px 6px;
   border-radius: 6px;
+}
+.dark .aui-md :not(pre) > code {
+  background: #383838;
 }
 .aui-md ul,
 .aui-md ol {
@@ -106,9 +119,13 @@ body {
   padding: 6px 10px;
 }
 .aui-md blockquote {
-  border-left: 3px solid #4a4a4a;
+  border-left: 3px solid #d4d4d4;
   margin: 0.6em 0;
   padding-left: 12px;
+  color: #616161;
+}
+.dark .aui-md blockquote {
+  border-color: #4a4a4a;
   color: #b4b4b4;
 }
 

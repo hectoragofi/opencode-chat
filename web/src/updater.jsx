@@ -16,7 +16,7 @@ function announceUpdate(u) {
   sharedUpdate = u;
   sharedListeners.forEach((fn) => fn(u));
 }
-function useSharedUpdate() {
+export function useSharedUpdate() {
   const [u, setU] = useState(sharedUpdate);
   useEffect(() => {
     sharedListeners.add(setU);

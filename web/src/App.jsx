@@ -15,8 +15,10 @@ import { field } from "./components/surfaces";
 import { ChatSidebar, ChatThread, ModelMenu } from "./chat.jsx";
 import { chatAttachmentAdapter } from "./attachments.jsx";
 import { DEFAULT_MODEL, FREE_MODELS, fetchAllModels, load, save } from "./models.js";
+import { SettingsIcon } from "lucide-react";
 import { AccountButton, AccountsDialog } from "./accounts.jsx";
 import { Onboarding, useSetupStatus } from "./onboarding.jsx";
+import { SettingsDialog } from "./settings.jsx";
 import { UpdateBanner, VersionFooter } from "./updater.jsx";
 
 const isFree = (m) =>
@@ -162,6 +164,7 @@ function ChatApp() {
   const [error, setError] = useState(null);
   const [sideOpen, setSideOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => save("model", model), [model]);
   useEffect(() => save("agent", agent), [agent]);
@@ -232,16 +235,30 @@ function ChatApp() {
                   Agent
                 </button>
               </div>
-              <AccountButton
-                connectedCount={connected.filter((id) => id !== "opencode").length}
-                onClick={() => setAccountsOpen(true)}
-              />
+              <div className="flex items-center gap-1">
+                <div className="min-w-0 flex-1 [&>button]:w-full">
+                  <AccountButton
+                    connectedCount={connected.filter((id) => id !== "opencode").length}
+                    onClick={() => setAccountsOpen(true)}
+                  />
+                </div>
+                <button
+                  className="flex size-9 shrink-0 items-center justify-center rounded-xl text-foreground/55 transition-colors hover:bg-foreground/[0.05] hover:text-foreground"
+                  onClick={() => setSettingsOpen(true)}
+                  title="Settings"
+                >
+                  <SettingsIcon className="size-[18px]" />
+                </button>
+              </div>
               <VersionFooter />
             </div>
           </aside>
         )}
         {!accountsOpen ? null : (
           <AccountsDialog onClose={() => setAccountsOpen(false)} onChanged={refreshModels} />
+        )}
+        {!settingsOpen ? null : (
+          <SettingsDialog onClose={() => setSettingsOpen(false)} onChanged={refreshModels} />
         )}
         <main className="bg-background flex min-h-0 min-w-0 flex-1 flex-col">
           <UpdateBanner />

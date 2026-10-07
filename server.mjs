@@ -448,6 +448,10 @@ function handle(req, res) {
     if (process.platform === "win32") spawn("explorer.exe", [FILES_DIR], { detached: true, stdio: "ignore" }).unref();
     return json(res, 200, { ok: true });
   }
+  if (req.url === "/setup/open-workspace" && req.method === "POST") {
+    if (process.platform === "win32") spawn("explorer.exe", [WORKSPACE_DIR], { detached: true, stdio: "ignore" }).unref();
+    return json(res, 200, { ok: true });
+  }
   return serveStatic(req, res);
 }
 
