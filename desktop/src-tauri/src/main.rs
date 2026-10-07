@@ -33,6 +33,12 @@ fn main() {
         // Silent background updates from our GitHub releases feed
         // (see plugins.updater in tauri.conf.json). The frontend drives
         // check/download/install via JS so it can show progress.
+        // NOTE: the window loads its UI from our own Node server
+        // (http://127.0.0.1:<port>), which Tauri classifies as a REMOTE
+        // origin — the remote.urls entry in capabilities/default.json is
+        // what permits these IPC calls (without it: "not allowed by ACL").
+        // Safe: the window only ever navigates to our server; external
+        // links are diverted to the system browser below.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(Server(Mutex::new(None)))
