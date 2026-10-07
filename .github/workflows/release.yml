@@ -88,6 +88,7 @@ jobs:
       - name: Stage sidecar for Tauri
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null
           Copy-Item dist/OpenCodeChat.exe `
             -Destination desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe -Force
 
