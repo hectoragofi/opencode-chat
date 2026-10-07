@@ -92,6 +92,11 @@ jobs:
           Copy-Item dist/OpenCodeChat.exe `
             -Destination desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe -Force
 
+      - name: Install desktop tooling
+        run: |
+          cd desktop
+          npm ci
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -109,5 +114,4 @@ jobs:
           releaseBody: "See the assets below to download and install. The desktop app updates itself automatically once this release is published."
           releaseDraft: true
           prerelease: false
-          updaterJsonKeepUniversal: true
           args: --target x86_64-pc-windows-msvc
