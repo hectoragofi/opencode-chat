@@ -114,4 +114,58 @@ jobs:
           releaseBody: "See the assets below to download and install. The desktop app updates itself automatically once this release is published."
           releaseDraft: true
           prerelease: false
+          uploadUpdaterJson: false
           args: --target x86_64-pc-windows-msvc
+
+      # tauri-action does not emit the updater bundle for our setup, so we
+      # build it ourselves: zip the NSIS installer, minisign it with the
+      # updater key, and publish latest.json (the feed the app polls).
+      - name: Build updater bundle
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $nsisDir = "desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $setup = Get-ChildItem $nsisDir -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "no *-setup.exe found in $nsisDir" }
+          # GitHub rewrites spaces to dots in asset names; rename first so the
+          # feed URL matches the uploaded file exactly.
+          $zipName = ($setup.BaseName + ".nsis.zip") -replace ' ', '.'
+          $zip = Join-Path $nsisDir $zipName
+          Compress-Archive -Path $setup.FullName -DestinationPath $zip -Force
+          $zipFull = (Resolve-Path $zip).Path
+          cd desktop
+          npx tauri signer sign "$zipFull"
+
+      - name: Publish latest.json
+        shell: node {0}
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          const { execFileSync } = require("node:child_process");
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const version = process.env.TAG.replace(/^v/, "");
+          const nsisDir = "desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis";
+          const zipName = fs.readdirSync(nsisDir).find((f) => f.endsWith(".nsis.zip"));
+          if (!zipName) throw new Error("no .nsis.zip found");
+          const sig = fs.readFileSync(path.join(nsisDir, zipName + ".sig"), "utf8");
+          const repo = "hectoragofi/opencode-chat";
+          const feed = {
+            version,
+            notes: `v${version} — see the release page for details.`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "windows-x86_64": {
+                signature: sig,
+                url: `https://github.com/${repo}/releases/download/${process.env.TAG}/${zipName}`,
+              },
+            },
+          };
+          fs.writeFileSync("latest.json", JSON.stringify(feed, null, 2) + "\n");
+          const run = (args) => execFileSync("gh", args, { stdio: "inherit" });
+          run(["release", "upload", process.env.TAG, "--repo", repo, "--clobber",
+            path.join(nsisDir, zipName), path.join(nsisDir, zipName + ".sig"), "latest.json"]);
+          console.log("updater feed published");
