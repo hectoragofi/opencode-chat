@@ -20,6 +20,16 @@ const WEB_PORT: &str = "47821";
 
 struct Server(Mutex<Option<CommandChild>>);
 
+fn updater_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R, tauri_plugin_updater::Config> {
+    let mut builder = tauri_plugin_updater::Builder::new();
+    if let Some(token) = option_env!("UPDATE_TOKEN") {
+        builder = builder
+            .header("Authorization", format!("Bearer {token}"))
+            .expect("UPDATE_TOKEN contains invalid header characters");
+    }
+    builder.build()
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -33,7 +43,10 @@ fn main() {
         // Silent background updates from our GitHub releases feed
         // (see plugins.updater in tauri.conf.json). The frontend drives
         // check/download/install via JS so it can show progress.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // The repo is private, so the feed needs a read-only token: it is
+        // baked in at build time via the UPDATE_TOKEN env var (CI sets it
+        // from secrets; local builds simply omit it and skip auth).
+        .plugin(updater_plugin())
         .plugin(tauri_plugin_process::init())
         .manage(Server(Mutex::new(None)))
         .setup(|app| {

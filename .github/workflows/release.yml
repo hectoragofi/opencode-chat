@@ -39,7 +39,6 @@ jobs:
         shell: node {0}
         env:
           TAG: ${{ github.ref_name }}
-          UPDATE_PAT: ${{ secrets.UPDATE_PAT }}
         run: |
           const fs = require("node:fs");
           const version = process.env.TAG.replace(/^v/, "");
@@ -53,10 +52,7 @@ jobs:
           const confPath = "desktop/src-tauri/tauri.conf.json";
           const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
           conf.version = version;
-          let confText = JSON.stringify(conf, null, 2) + "\n";
-          confText = confText.replace("__UPDATE_TOKEN__", process.env.UPDATE_PAT);
-          if (confText.includes("__UPDATE_TOKEN__")) throw new Error("UPDATE_PAT secret is empty");
-          fs.writeFileSync(confPath, confText);
+          fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
           // Cargo.toml (keep in sync; tauri falls back to it)
           const cargoPath = "desktop/src-tauri/Cargo.toml";
           fs.writeFileSync(
@@ -107,6 +103,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Baked into the app at compile time (option_env! in main.rs) so the
+          # updater can poll releases on this private repo.
+          UPDATE_TOKEN: ${{ secrets.UPDATE_PAT }}
         with:
           projectPath: desktop
           tagName: v__VERSION__
