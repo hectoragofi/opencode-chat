@@ -30,6 +30,7 @@ Chat with frontier models through your OpenCode Zen account, ChatGPT Plus/Pro, G
 - [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 - [Security Notes](#security-notes)
+- [Slop Disclaimer](#slop-disclaimer)
 - [License and Acknowledgements](#license-and-acknowledgements)
 
 ---
@@ -316,6 +317,17 @@ opencode-chat/
 - Generated-file serving enforces strict path containment; traversal outside `files/` is rejected.
 - Auto-update bundles are Ed25519-signed (Minisign) and verified before installation.
 - Signing keys and release tokens are stored outside the repository and must never be committed.
+
+---
+
+## Slop Disclaimer
+
+OpenCode Chat is powered by large language models — including free-tier models that may collect prompts, hallucinate facts, and occasionally produce generic, low-effort filler ("slop").
+
+- **Verify before you trust.** AI output can be confidently wrong. Double-check facts, figures, citations, and any generated documents before sharing or acting on them.
+- **Review generated files.** Spreadsheets, reports, and decks are drafts, not finished work — inspect formulas, totals, and wording before sending them anywhere important.
+- **Free models have trade-offs.** They are convenient and $0, but expect variable quality, rate limits, and region blocks. Switch to a stronger model when accuracy matters.
+- **You are the editor-in-chief.** The assistant does the heavy lifting; final judgment is yours.
 
 ---
 
