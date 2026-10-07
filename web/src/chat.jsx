@@ -337,10 +337,63 @@ function UserFile({ filename, data, mimeType }) {
   );
 }
 
+// The opencode runtime splits image/file parts OUT of message content into
+// message.attachments, so they only render through this primitive — the
+// Image/File part slots alone never fire. Thumbnails first, text below.
+function SentAttachment({ attachment }) {
+  const [objUrl, setObjUrl] = useState(null);
+  const part = (attachment.content || []).find((p) => p.type === "image" || p.type === "file");
+  const file = attachment.file;
+  useEffect(() => {
+    if (part || !file) return;
+    const u = URL.createObjectURL(file);
+    setObjUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [part, file]);
+  const name = attachment.name || part?.filename || "Attached file";
+  const mime = part?.mimeType || part?.mime || attachment.contentType || "";
+  const src =
+    part?.type === "image"
+      ? part.image
+      : part?.type === "file" && (mime.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(name))
+        ? part.data
+        : objUrl;
+  if (src) {
+    return (
+      <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        title={name}
+        className="block max-w-60 overflow-hidden rounded-xl border border-border/60"
+      >
+        <img src={src} alt={name} className="block max-h-60 w-auto object-cover" />
+      </a>
+    );
+  }
+  const href = part?.type === "file" && part?.data ? part.data : objUrl;
+  const inner = (
+    <span className={cn(field, "flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs")}>
+      <FileIcon className="size-3.5 shrink-0 text-foreground/55" />
+      <span className="max-w-48 truncate font-medium">{name}</span>
+    </span>
+  );
+  return href ? (
+    <a href={href} download={name} title={name}>
+      {inner}
+    </a>
+  ) : (
+    inner
+  );
+}
+
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="group mx-auto flex w-full max-w-3xl justify-end px-4 py-2.5">
       <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5">
+        <MessagePrimitive.Attachments>
+          {({ attachment }) => <SentAttachment key={attachment.id} attachment={attachment} />}
+        </MessagePrimitive.Attachments>
         <MessagePrimitive.Parts components={{ Text: UserText, Image: UserImage, File: UserFile }} />
         <ActionBarPrimitive.Root className="mt-0.5 flex gap-0.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
           <ActionBarPrimitive.Edit
