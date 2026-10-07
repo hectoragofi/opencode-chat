@@ -111,16 +111,32 @@ and produces `desktop/src-tauri/target/release/bundle/nsis/*-setup.exe`.
 
 ## 🚢 Releasing
 
-Releases are built by CI. To ship a new version:
+Releases are built **locally** (warm build cache, no CI roulette):
 
 ```sh
-git tag v1.1.0 && git push origin v1.1.0
+# 1. Stamp the version everywhere
+node -e "for (const f of ['package.json','desktop/src-tauri/tauri.conf.json']) { const j=require('./'+f); j.version='1.1.3'; require('fs').writeFileSync(f, JSON.stringify(j,null,2)+'\n'); }"
+#    + bump `version` in desktop/src-tauri/Cargo.toml to match
+
+# 2. Build (UPDATE_TOKEN = read-only PAT for the private release feed)
+cd web && npm run build && cd ..
+npm run build:exe
+cp dist/OpenCodeChat.exe desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe
+cd desktop && UPDATE_TOKEN="<pat>" npx tauri build && cd ..
+
+# 3. Test-launch the installed app before shipping it
+
+# 4. Zip + sign + feed (signing key lives in ~/.tauri, never in git)
+#    (see .github/workflows/release.yml for the exact commands)
+
+# 5. Publish
+git commit -am "v1.1.3" && git tag v1.1.3 && git push origin main v1.1.3
+gh release create v1.1.3 --title v1.1.3 --notes "..." --draft <assets>
+#    review the draft, then: gh release edit v1.1.3 --draft=false
 ```
 
-The `Release` workflow stamps the version everywhere, builds the installer +
-auto-update bundle (`*-setup.exe`, `.nsis.zip`, `latest.json`), and creates a
-**draft** release. Review it, press **Publish** — publishing is what makes
-installed apps offer the update.
+Publishing is what makes installed apps offer the update (they poll
+`releases/latest/download/latest.json`).
 
 One-time setup (repo Settings → Secrets → Actions):
 

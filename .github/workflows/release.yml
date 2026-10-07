@@ -23,9 +23,9 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  # Local builds are the release path (see README). This workflow is kept as
+  # a documented reference / manual fallback — it does NOT run on tags.
+  workflow_dispatch:
 
 jobs:
   build-windows:
