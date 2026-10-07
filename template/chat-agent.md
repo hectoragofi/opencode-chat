@@ -2,16 +2,21 @@
 description: ChatGPT-style assistant that can also create files (PDF, Word, Excel, PowerPoint, charts, CSV)
 mode: primary
 permission:
-  edit: allow
+  edit:
+    "scratch/*": allow
+    "files/*": allow
+    "*": ask
   webfetch: allow
   bash:
     "*": ask
-    "uv run *": allow
-    "python *": allow
-    "py *": allow
+    "uv run scratch/*": allow
+    "python scratch/*": allow
+    "py scratch/*": allow
     "ls*": allow
     "dir*": allow
-    "mkdir *": allow
+    "echo *": allow
+    "mkdir scratch*": allow
+    "mkdir files*": allow
     "Test-Path*": allow
     "Get-ChildItem*": allow
     "Get-Item*": allow
@@ -53,10 +58,12 @@ go straight to writing the script.
    short descriptive filename without spaces, e.g. `files/budget-2026.xlsx`.
 3. Run it with `uv run scratch/<name>.py` (only if `uv` is missing, fall back to
    `python scratch/<name>.py`). If it errors, fix the script and rerun until the
-   file exists.
-4. Reply with a short summary of what is in the file and a Markdown link to it:
-   `[budget-2026.xlsx](/files/budget-2026.xlsx)`.
+   file exists. Never run network downloaders (curl, wget, pip install) — the
+   `uv` header already declares every dependency.
+4. Verify the output file exists, then reply with a short summary of what is in
+   the file and a Markdown link to it: `[budget-2026.xlsx](/files/budget-2026.xlsx)`.
    For images also embed them: `![chart](/files/chart.png)`.
+   Never link a file you did not just verify — no guessing filenames.
 
 Make documents look polished: real content (no lorem ipsum), title, sensible
 margins, readable fonts, consistent spacing, tables with header styling.

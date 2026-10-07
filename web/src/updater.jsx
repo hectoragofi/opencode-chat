@@ -152,6 +152,7 @@ export function VersionFooter() {
   const [state, setState] = useState("idle"); // idle | checking | current | failed
   const [detail, setDetail] = useState("");
   const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
+  const buildId = typeof __BUILD_ID__ !== "undefined" ? __BUILD_ID__ : "dev";
   const recheck = async () => {
     if (!isTauri() || state === "checking") return;
     setState("checking");
@@ -177,10 +178,10 @@ export function VersionFooter() {
     <span className="flex flex-col items-center gap-0.5 px-1">
       <button
         className="text-center text-[11px] text-foreground/30 transition hover:text-foreground/60"
-        title={isTauri() ? "Check for updates" : "Desktop app checks for updates on launch"}
+        title={`Build ${buildId} · ${isTauri() ? "click to check for updates" : "Desktop app checks for updates on launch"}`}
         onClick={recheck}
       >
-        v{appVersion}
+        v{appVersion} · {String(buildId).slice(-9)}
         {state === "checking"
           ? " · checking…"
           : state === "current"

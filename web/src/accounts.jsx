@@ -254,29 +254,53 @@ function ConnectForm({ providerID, methods, keyUrl, onDone }) {
   );
 }
 
-function ProviderRow({ id, name, blurb, keyUrl, connected, source, methods, open, onToggle, onChanged }) {
+function ProviderRow({ id, name, blurb, keyUrl, connected, source, env, methods, open, onToggle, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const envManaged = connected && source === "environment";
+  // opencode reports source as "env" | "config" | "custom" | "api".
+  // Only "custom"/"api" creds can be removed via DELETE /auth/{id};
+  // env/config keys stay active until unset outside the app.
+  const managedSource = connected && (source === "env" || source === "config");
+  const managedLabel = source === "config" ? "via config file" : "via env var";
   const disconnect = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api(`/auth/${id}`, { method: "DELETE" });
+      try {
+        await api(`/auth/${id}`, { method: "DELETE" });
+      } catch (e) {
+        // Already gone server-side still counts as disconnected.
+        const msg = String(e?.message || e);
+        if (!/HTTP (400|404)/.test(msg)) throw e;
+      }
       // The engine can keep reporting a removed provider as connected for a
       // while (stale state cache), so poll until it drops out of the list.
       let stillThere = true;
-      for (let i = 0; i < 5 && stillThere; i++) {
+      for (let i = 0; i < 6 && stillThere; i++) {
         await reloadProviders().catch(() => {});
         await onChanged();
         await new Promise((r) => setTimeout(r, 700));
         const prov = await api("/provider").catch(() => null);
         stillThere = !!prov?.connected?.includes(id);
+        // Zen free tier is always "connected" with no key — not a failure.
+        if (id === "opencode" && prov) {
+          const entry = (prov.all || []).find((p) => p.id === "opencode");
+          if (entry && entry.source === "custom") stillThere = false;
+        }
       }
       if (stillThere) {
-        setError(
-          "Credentials were deleted, but the engine still lists this provider as connected. Restart the app; if it persists, the key comes from an environment variable, which can only be removed by unsetting it."
-        );
+        // Re-check where the key comes from before blaming stale state.
+        const prov = await api("/provider").catch(() => null);
+        const entry = prov ? (prov.all || []).find((p) => p.id === id) : null;
+        if (entry && (entry.source === "env" || entry.source === "config")) {
+          setError(
+            `This key comes from ${entry.source === "env" ? "an environment variable" : "your opencode config file"}, so deleting stored credentials can't remove it. Unset ${entry.source === "env" ? (entry.env || []).join(", ") || "the env var" : "it in opencode.json"} to fully disconnect.`
+          );
+        } else {
+          setError(
+            "Credentials were deleted, but the engine still lists this provider as connected. It usually clears after a restart — if it persists, the key comes from an environment variable, which can only be removed by unsetting it."
+          );
+        }
       }
     } catch (e) {
       setError(`Couldn't disconnect: ${String(e?.message || e)}`);
@@ -298,12 +322,12 @@ function ProviderRow({ id, name, blurb, keyUrl, connected, source, methods, open
           </div>
           {!blurb ? null : <p className="text-xs text-foreground/50">{blurb}</p>}
         </div>
-        {envManaged ? (
+        {managedSource ? (
           <span
             className="shrink-0 rounded-full bg-foreground/[0.05] px-2.5 py-1 text-xs text-foreground/45"
-            title="This credential comes from an environment variable. Unset the variable to disconnect."
+            title={source === "config" ? "This credential comes from your opencode config file. Remove it there to disconnect." : `This credential comes from an environment variable (${(env || []).join(", ") || "see opencode docs"}). Unset it (user + system variables), then restart the app.`}
           >
-            via env var
+            {managedLabel}
           </span>
         ) : connected ? (
           <button
@@ -373,6 +397,7 @@ export function ProviderList({ onChanged, exclude = [] }) {
     return [...featured, ...others].map((id) => ({
       id,
       source: byId[id]?.source,
+      env: byId[id]?.env || [],
       name: FEATURED[id]?.name || byId[id]?.name || id,
       blurb: FEATURED[id]?.blurb,
       keyUrl: FEATURED[id]?.keyUrl,

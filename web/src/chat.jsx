@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionBarPrimitive,
   AttachmentPrimitive,
@@ -15,6 +15,7 @@ import {
   useOpenCodePermissions,
   useOpenCodeQuestions,
   useOpenCodeRuntimeExtras,
+  useOpenCodeSession,
   useOpenCodeThreadState,
 } from "@assistant-ui/react-opencode";
 import { MarkdownTextPrimitive, normalizeMathDelimiters } from "@assistant-ui/react-markdown";
@@ -25,6 +26,7 @@ import {
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -37,8 +39,10 @@ import {
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
+  SearchIcon,
   Trash2Icon,
   WrenchIcon,
+  XCircleIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { field, ghostButton, ShimmerLabel } from "./components/surfaces";
@@ -47,31 +51,79 @@ import {
   ComposerAttachButton,
   ComposerAttachments,
   ComposerBar,
+  ComposerContext,
   ComposerSend,
   ComposerToolbar,
 } from "./components/composer";
 import { ApprovalCard } from "./components/approval-card";
 import { ModelPicker } from "./components/model-picker";
+import {
+  EmptyState,
+  EmptyStateGreeting,
+  EmptyStateSuggestion,
+  EmptyStateSuggestions,
+} from "./components/empty-state";
+import { loadRecentModels, saveRecentModel } from "./models.js";
 
 /* ---------------- thread list (sidebar) ---------------- */
 
-export function ChatSidebar() {
+export function ChatSidebar({ onNavigate } = {}) {
+  const [query, setQuery] = useState("");
+  // Ctrl+Shift+O starts a new chat from anywhere.
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        document.querySelector("[data-sidebar-new]")?.click();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const q = query.trim().toLowerCase();
+  // ThreadListPrimitive owns the rows; filter them in the DOM so search
+  // works without depending on runtime thread metadata.
+  useEffect(() => {
+    const root = document.querySelector("[data-sidebar-rows]");
+    if (!root) return;
+    const rows = root.querySelectorAll("[data-thread-row]");
+    rows.forEach((row) => {
+      const title = row.getAttribute("data-thread-title") || row.textContent || "";
+      row.style.display = !q || title.toLowerCase().includes(q) ? "" : "none";
+    });
+  });
   return (
     <ThreadListPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 flex gap-2 p-3">
-        <ThreadListPrimitive.New className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-foreground/[0.05]">
+        <ThreadListPrimitive.New data-sidebar-new className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-foreground/[0.05]" title="New chat (Ctrl+Shift+O)">
           <PlusIcon className="size-4" />
           New chat
         </ThreadListPrimitive.New>
       </div>
+      <div className="shrink-0 px-3 pb-2">
+        <label className="flex items-center gap-2 rounded-xl bg-foreground/[0.04] px-3 py-1.5 dark:bg-foreground/[0.06]">
+          <SearchIcon className="size-3.5 shrink-0 text-foreground/40" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search chats…"
+            className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-foreground/35"
+          />
+          {!q ? null : (
+            <button onClick={() => setQuery("")} className="text-foreground/40 hover:text-foreground" title="Clear">
+              <XCircleIcon className="size-3.5" />
+            </button>
+          )}
+        </label>
+      </div>
       <div className="shrink-0 px-5 pb-1.5 font-mono text-[11px] tracking-tight text-foreground/35">
         Chats
       </div>
-      <div className="min-h-0 flex-1 scroll-pane overflow-y-auto px-2 pb-2">
-        <ThreadListPrimitive.Items className="flex flex-col gap-px">
+      <div className="min-h-0 flex-1 scroll-pane overflow-y-auto px-2 pb-2" data-sidebar-rows>
+        <ThreadListPrimitive.Items className="flex flex-col gap-px" data-thread-rows>
           {() => (
-            <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg transition-colors hover:bg-foreground/[0.05] data-active:bg-foreground/[0.07]">
-              <ThreadListItemPrimitive.Trigger className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm outline-none">
+            <ThreadListItemPrimitive.Root data-thread-row className="group flex items-center gap-1 rounded-lg transition-colors hover:bg-foreground/[0.05] data-active:bg-foreground/[0.07]" data-thread-title="">
+              <ThreadListItemPrimitive.Trigger className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm outline-none" onClick={() => onNavigate?.()}>
                 <ThreadListItemPrimitive.Title fallback="New chat" />
               </ThreadListItemPrimitive.Trigger>
               <ThreadListItemPrimitive.Delete
@@ -240,12 +292,70 @@ function FileLink({ href, children, node: _node, ...rest }) {
   return <FileCard path={path} name={name} ext={ext} />;
 }
 
+function codeText(children) {
+  let out = "";
+  const walk = (n) => {
+    if (typeof n === "string") out += n;
+    else if (Array.isArray(n)) n.forEach(walk);
+    else if (n && typeof n === "object" && "props" in n) walk(n.props.children);
+  };
+  walk(children);
+  return out;
+}
+
+function CodeBlock({ node: _node, children, ...props }) {
+  const [copied, setCopied] = useState(false);
+  const boxRef = useRef(null);
+  // Fences with nothing (or only whitespace) inside render as a big empty
+  // dark box — collapse them instead of showing a dead block.
+  if (!codeText(children).trim()) return null;
+  const copy = async () => {
+    try {
+      const text = boxRef.current?.querySelector("code")?.innerText ?? "";
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  return (
+    <span className="group/code relative my-2 block max-w-full" ref={boxRef}>
+      <pre className="!m-0 max-w-full pr-11" {...props}>
+        {children}
+      </pre>
+      <button
+        type="button"
+        onClick={copy}
+        title={copied ? "Copied" : "Copy code"}
+        className="absolute right-2 top-2 rounded-lg border border-border/60 bg-background p-1.5 text-foreground/55 opacity-0 shadow-sm transition group-hover/code:opacity-100 hover:text-foreground focus:opacity-100"
+      >
+        {copied ? <CheckIcon className="size-3.5 text-emerald-500" /> : <CopyIcon className="size-3.5" />}
+      </button>
+    </span>
+  );
+}
+
+// Wide GFM tables otherwise blow out the message column: rows stretch past
+// the viewport and smear into full-width lines. The scroll wrapper keeps
+// the table intact with horizontal scroll instead.
+function MdTable({ node: _node, ...props }) {
+  return (
+    <div className="md-table-wrap not-prose my-2 max-w-full scroll-pane overflow-x-auto rounded-xl border border-border/60">
+      <table className="w-max min-w-full border-collapse text-[13.5px]" {...props} />
+    </div>
+  );
+}
+
 const markdownComponents = {
   a: FileLink,
+  table: MdTable,
+  pre: CodeBlock,
   img: ({ node: _node, src, ...props }) => (
     <img
       {...props}
       src={toFilesPath(src) || src}
+      loading="lazy"
       className="my-2 max-h-[480px] max-w-full rounded-xl border border-border/60"
     />
   ),
@@ -263,7 +373,27 @@ function MarkdownWithMath(props) {
   );
 }
 
+const USER_COLLAPSE_LINES = 12;
+const USER_COLLAPSE_CHARS = 1200;
+
+function CollapseToggle({ open, label, onClick, className }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1 text-xs text-foreground/45 transition hover:text-foreground",
+        className,
+      )}
+    >
+      <ChevronDownIcon className={cn("size-3.5 transition-transform", open && "rotate-180")} />
+      {open ? "Show less" : label}
+    </button>
+  );
+}
+
 function UserText({ text }) {
+  const [open, setOpen] = useState(false);
   if (
     typeof text === "string" &&
     (text.startsWith("Attached ZIP") || text.startsWith("Attached file"))
@@ -282,15 +412,27 @@ function UserText({ text }) {
       </details>
     );
   }
+  const lineCount = text.split("\n").length;
+  const collapsible = lineCount > USER_COLLAPSE_LINES || text.length > USER_COLLAPSE_CHARS;
+  const collapsed = collapsible && !open;
   return (
-    <div
-      className={cn(
-        field,
-        "fade-in slide-in-from-bottom-1 animate-in rounded-2xl rounded-br-lg px-3.5 py-2 text-[14.5px] duration-300",
+    <>
+      <div
+        className={cn(
+          field,
+          "fade-in slide-in-from-bottom-1 animate-in relative min-w-0 max-w-full rounded-2xl rounded-br-lg px-3.5 py-2 text-[14.5px] duration-300",
+          collapsed && "max-h-60 overflow-hidden",
+        )}
+      >
+        <span className="whitespace-pre-wrap break-words">{text}</span>
+        {!collapsed ? null : (
+          <span className="pointer-events-none absolute inset-x-0 bottom-0 h-14 rounded-b-2xl bg-gradient-to-t from-background/95 to-transparent" />
+        )}
+      </div>
+      {!collapsible ? null : (
+        <CollapseToggle open={open} label={`Show more · ${lineCount} lines`} onClick={() => setOpen((o) => !o)} />
       )}
-    >
-      <span className="whitespace-pre-wrap">{text}</span>
-    </div>
+    </>
   );
 }
 
@@ -411,6 +553,8 @@ function UserMessage() {
   );
 }
 
+// Answers always render in full — only the owner's own oversized messages
+// collapse (their huge pastes stay compact, replies stay complete).
 function AssistantMessage() {
   return (
     <MessagePrimitive.Root className="group fade-in animate-in mx-auto w-full max-w-3xl px-4 py-2.5 duration-300">
@@ -501,8 +645,66 @@ function useActivity() {
   return raw || "thinking|thinking";
 }
 
+function toolElapsed(p) {
+  const t = p.state?.time;
+  if (!t?.start) return "";
+  const end = t.end || Date.now();
+  const s = Math.max(0, Math.round((end - t.start) / 1000));
+  return s < 1 ? "" : `${s}s`;
+}
+
+function toolLabel(p) {
+  const detail = p.state?.title || summarizeInput(p.state?.input);
+  return `${p.tool}${detail ? ` · ${detail}` : ""}`;
+}
+
+// Completed + running tool calls of the current assistant turn, so Agent
+// mode shows its work instead of only the final answer.
+// NOTE: the selector must return a primitive (string) — returning an array
+// gives a fresh reference on every snapshot and React loops forever (#185).
+function useToolTrace() {
+  let key = "[]";
+  try {
+    key = useOpenCodeThreadState((s) => {
+      try {
+        const ids = s.messageOrder || [];
+        for (let i = ids.length - 1; i >= 0; i--) {
+          const m = s.messagesById?.[ids[i]];
+          if (!m || m.info?.role !== "assistant") continue;
+          const parts = (m.parts || []).filter((p) => p.type === "tool");
+          if (parts.length || (m.parts || []).some((p) => p.type === "text" && p.text)) {
+            return JSON.stringify(parts.map((p) => ({
+              id: p.id,
+              tool: p.tool,
+              status: p.state?.status || "pending",
+              label: toolLabel(p),
+              elapsed: toolElapsed(p),
+              error: p.state?.status === "error" ? String(p.state?.error || "failed").slice(0, 160) : "",
+            })));
+          }
+        }
+        return "[]";
+      } catch {
+        return "[]";
+      }
+    });
+  } catch {
+    return []; // thread not backed by a session yet
+  }
+  return useMemo(() => {
+    try {
+      const v = JSON.parse(key);
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  }, [key]);
+}
+
 function RunStatus() {
   const activity = useActivity();
+  const trace = useToolTrace();
+  const [open, setOpen] = useState(false);
   const sep = (activity || "thinking|thinking").indexOf("|");
   const kind = sep < 0 ? "thinking" : activity.slice(0, sep);
   const label = sep < 0 ? activity : activity.slice(sep + 1);
@@ -514,20 +716,54 @@ function RunStatus() {
   }, []);
   const Icon =
     kind === "tool" ? WrenchIcon : kind === "reasoning" ? BrainIcon : kind === "question" ? HelpCircleIcon : null;
-  if (kind === "writing") return null; // text streams with typing effect instead
+  const done = (trace || []).filter((t) => t.status === "completed" || t.status === "error");
   return (
-    <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 py-2 text-[13px]">
-      {Icon ? (
-        <span className="flex min-w-0 items-center gap-1.5 text-foreground/55">
-          <Icon className="size-3.5 shrink-0" />
-          <span className="truncate">{label}</span>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 py-2">
+      <div className="flex items-center gap-2 text-[13px]">
+        {Icon ? (
+          <span className="flex min-w-0 items-center gap-1.5 text-foreground/55">
+            <Icon className="size-3.5 shrink-0" />
+            <span className="truncate">{label}</span>
+          </span>
+        ) : kind === "writing" ? (
+          <span className="flex min-w-0 items-center gap-1.5 text-foreground/55">
+            <ShimmerLabel>writing answer…</ShimmerLabel>
+          </span>
+        ) : (
+          <ShimmerLabel className="text-foreground/55">thinking…</ShimmerLabel>
+        )}
+        <span className="font-mono text-[11px] tracking-tight text-foreground/35 tabular-nums">
+          {secs}s
         </span>
-      ) : (
-        <ShimmerLabel className="text-foreground/55">thinking…</ShimmerLabel>
+        {!done.length ? null : (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            className="ml-1 flex items-center gap-0.5 rounded-full px-2 py-0.5 font-mono text-[11px] text-foreground/45 transition hover:bg-foreground/[0.06] hover:text-foreground"
+            title={open ? "Hide steps" : "Show steps"}
+          >
+            <ChevronRightIcon className={cn("size-3 transition-transform", open && "rotate-90")} />
+            {done.length} step{done.length === 1 ? "" : "s"}
+          </button>
+        )}
+      </div>
+      {!open || !done.length ? null : (
+        <div className="flex flex-col gap-0.5 rounded-xl border border-border/60 bg-foreground/[0.02] p-1.5">
+          {done.slice(-8).map((t) => (
+            <div key={t.id} className="flex items-center gap-2 px-1.5 py-1 text-xs" title={t.error || t.label}>
+              {t.status === "error" ? (
+                <XCircleIcon className="size-3.5 shrink-0 text-red-400" />
+              ) : (
+                <CheckIcon className="size-3.5 shrink-0 text-emerald-500" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-foreground/65">{t.label}</span>
+              {!t.elapsed ? null : (
+                <span className="shrink-0 font-mono text-[10px] text-foreground/35 tabular-nums">{t.elapsed}</span>
+              )}
+            </div>
+          ))}
+        </div>
       )}
-      <span className="font-mono text-[11px] tracking-tight text-foreground/35 tabular-nums">
-        {secs}s
-      </span>
     </div>
   );
 }
@@ -693,29 +929,54 @@ function PermissionApprovals() {
 export function ModelMenu({ model, onPick, allModels, connected }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [recent, setRecent] = useState(() => loadRecentModels());
   const q = query.trim().toLowerCase();
   const match = (m) =>
-    !q || m.modelID.toLowerCase().includes(q) || m.providerID.toLowerCase().includes(q);
+    !q ||
+    m.modelID.toLowerCase().includes(q) ||
+    m.providerID.toLowerCase().includes(q) ||
+    (m.name || "").toLowerCase().includes(q) ||
+    (m.family || "").toLowerCase().includes(q);
+  const byId = new Map(allModels.map((m) => [`${m.providerID}/${m.modelID}`, m]));
+  const recentItems = recent
+    .map((r) => byId.get(`${r.providerID}/${r.modelID}`))
+    .filter(Boolean)
+    .filter(match)
+    .slice(0, 5);
   const free = allModels.filter((m) => m.free && match(m));
-  const rest = allModels.filter((m) => !m.free && match(m)).slice(0, 300);
+  const rest = allModels
+    .filter((m) => !m.free && match(m))
+    .sort((a, b) => {
+      const ac = connected.includes(a.providerID) ? 0 : 1;
+      const bc = connected.includes(b.providerID) ? 0 : 1;
+      if (ac !== bc) return ac - bc;
+      return (a.modelID || "").localeCompare(b.modelID || "");
+    })
+    .slice(0, 300);
+  const toItem = (m, familyOverride, star) => ({
+    id: `${m.providerID}/${m.modelID}`,
+    name: star ? `★ ${m.name || m.modelID}` : m.name || m.modelID,
+    family: familyOverride || m.family || m.providerID,
+    context: m.context || "",
+    price: m.price || "",
+    capabilities: (m.capabilities || []).slice(0, 3),
+  });
   const items = [
-    ...free.map((m) => ({
-      id: `${m.providerID}/${m.modelID}`,
-      name: `★ ${m.modelID}`,
-      family: "Free",
-      context: "",
-      price: "",
-      capabilities: [m.providerID],
-    })),
-    ...rest.map((m) => ({
-      id: `${m.providerID}/${m.modelID}`,
-      name: m.modelID,
-      family: connected.includes(m.providerID) ? `● ${m.providerID}` : m.providerID,
-      context: "",
-      price: "",
-      capabilities: [],
-    })),
+    ...(!q ? recentItems.map((m) => toItem(m, "Recent")) : []),
+    ...free.map((m) => toItem(m, "Free", true)),
+    ...rest.map((m) =>
+      toItem(m, connected.includes(m.providerID) ? `● ${m.family || m.providerID}` : m.family || m.providerID)
+    ),
   ];
+  const pick = (id) => {
+    const [providerID, ...restId] = id.split("/");
+    const next = { providerID, modelID: restId.join("/") };
+    saveRecentModel(next);
+    setRecent(loadRecentModels());
+    onPick(next);
+    setOpen(false);
+    setQuery("");
+  };
   return (
     <div className="relative">
       <button
@@ -742,15 +1003,15 @@ export function ModelMenu({ model, onPick, allModels, connected }) {
               />
             </div>
             <div className="max-h-[50vh] scroll-pane overflow-y-auto">
-              <ModelPicker
-                models={items}
-                selectedId={`${model.providerID}/${model.modelID}`}
-                onSelect={(id) => {
-                  const [providerID, ...restId] = id.split("/");
-                  onPick({ providerID, modelID: restId.join("/") });
-                  setOpen(false);
-                }}
-              />
+              {!items.length ? (
+                <p className="px-3 py-6 text-center text-sm text-foreground/45">No models match “{query.trim()}”.</p>
+              ) : (
+                <ModelPicker
+                  models={items}
+                  selectedId={`${model.providerID}/${model.modelID}`}
+                  onSelect={pick}
+                />
+              )}
             </div>
           </div>
         </>
@@ -816,7 +1077,40 @@ function SendButton() {
   );
 }
 
+function useContextUsage() {
+  let session = null;
+  let limit = 0;
+  try {
+    session = useOpenCodeSession();
+    limit = useOpenCodeThreadState((s) => {
+      try {
+        const model = s.session?.model;
+        if (!model) return 0;
+        return 0; // resolved below via window model metadata
+      } catch {
+        return 0;
+      }
+    });
+  } catch {
+    return null; // thread not backed by a session yet
+  }
+  void limit;
+  const tokens = session?.tokens;
+  if (!tokens) return null;
+  const used = (tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0);
+  if (!used) return null;
+  // Model limit comes from the picker metadata cached on window by App.
+  const total = (typeof window !== "undefined" && window.__ocModelLimit) || 200000;
+  return {
+    system: 0,
+    tools: Math.round(((tokens.cache?.read || 0) + (tokens.cache?.write || 0)) / 1000),
+    messages: Math.max(0, Math.round(used / 1000) - Math.round(((tokens.cache?.read || 0) + (tokens.cache?.write || 0)) / 1000)),
+    total: Math.max(1, Math.round(total / 1000)),
+  };
+}
+
 export function Composer() {
+  const usage = useContextUsage();
   return (
     <ComposerPrimitive.AttachmentDropzone className="w-full rounded-[28px] data-[dragging]:outline-2 data-[dragging]:outline-blue-500 data-[dragging]:outline-offset-4">
       <ComposerPrimitive.Root>
@@ -830,7 +1124,7 @@ export function Composer() {
         </div>
         <ComposerPrimitive.Input
           placeholder="Ask anything (attach any file)"
-          className="min-h-11 w-full resize-none bg-transparent px-3 text-[15px] outline-none placeholder:text-foreground/35"
+          className="max-h-48 min-h-11 w-full resize-none bg-transparent px-3 text-[15px] outline-none placeholder:text-foreground/35"
           rows={1}
         />
         <ComposerToolbar className="px-1 pb-1">
@@ -838,7 +1132,9 @@ export function Composer() {
             <ComposerPrimitive.AddAttachment asChild>
               <ComposerAttachButton title="Attach any file" />
             </ComposerPrimitive.AddAttachment>
+            {!usage ? null : <ComposerContext usage={usage} />}
           </ComposerActions>
+          <span className="hidden text-[11px] text-foreground/30 sm:block">Enter to send · Shift+Enter for a new line</span>
           <SendButton />
         </ComposerToolbar>
         </ComposerBar>
@@ -847,18 +1143,55 @@ export function Composer() {
   );
 }
 
+const SUGGESTIONS = [
+  "Make me a one-page PDF summary of…",
+  "Turn this spreadsheet into a chart…",
+  "Draft a Word doc for…",
+  "Build a slide deck about…",
+];
+
+function fillComposer(text) {
+  const el = document.querySelector("[data-composer-input], textarea[placeholder*='Ask anything']");
+  if (el) {
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(el.__proto__, "value")?.set
+      || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("change", { bubbles: true }));
+  }
+}
+
+export function EmptyHome() {
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center px-4 py-10">
+      <EmptyState>
+        <EmptyStateGreeting>What can I help with?</EmptyStateGreeting>
+        <EmptyStateSuggestions>
+          {SUGGESTIONS.map((s, i) => (
+            <EmptyStateSuggestion key={s} index={i} onClick={() => fillComposer(s)}>
+              {s}
+            </EmptyStateSuggestion>
+          ))}
+        </EmptyStateSuggestions>
+      </EmptyState>
+      <p className="mt-6 max-w-sm text-center text-xs leading-relaxed text-foreground/35">
+        Tip: ask for a PDF, Word, Excel or PowerPoint file and it appears right in the chat.
+      </p>
+    </div>
+  );
+}
+
 /* ---------------- thread ---------------- */
 
 export function ChatThread() {
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col">
-      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 scroll-pane flex-col overflow-y-auto">
+    <ThreadPrimitive.Root className="flex h-full min-h-0 min-w-0 flex-col">
+      {/* overflow-x-clip: one over-wide message (huge table/code) can never
+          stretch the column again — inner scrollers (tables, pre) still work. */}
+      <ThreadPrimitive.Viewport className="flex min-h-0 min-w-0 flex-1 scroll-pane flex-col overflow-y-auto overflow-x-clip">
         <AuiIf condition={(s) => s.thread.isEmpty}>
-          <div className="flex min-h-full flex-col items-center justify-center px-4">
-            <h1 className="fade-in slide-in-from-bottom-2 animate-in fill-mode-both text-center text-[28px] font-medium tracking-tight duration-500">
-              What can I help with?
-            </h1>
-          </div>
+          <EmptyHome />
         </AuiIf>
         <AuiIf condition={(s) => !s.thread.isEmpty}>
           <div className="flex flex-col pb-2 pt-4">

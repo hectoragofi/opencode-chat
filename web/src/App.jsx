@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { useOpenCodeRuntime, useOpenCodeSession } from "@assistant-ui/react-opencode";
+import { useOpenCodeRuntime, useOpenCodeSession, useOpenCodeThreadState } from "@assistant-ui/react-opencode";
 import {
   BotIcon,
   CheckIcon,
   CopyIcon,
+  DownloadIcon,
   MessageCircleIcon,
   PanelLeftIcon,
   ShareIcon,
@@ -131,6 +132,45 @@ function ShareButton() {
   );
 }
 
+function ExportButton() {
+  let count = 0;
+  try {
+    count = useOpenCodeThreadState((s) => (s.messageOrder || []).length);
+  } catch {
+    return null; // thread not backed by a session yet
+  }
+  const disabled = !count;
+  const run = () => {
+    try {
+      // Read the live thread snapshot from the DOM-independent store via a
+      // temporary hook-free path: use the runtime extras session messages.
+      // Fallback: export from rendered markdown nodes.
+      const nodes = document.querySelectorAll(".aui-md");
+      const parts = [...nodes].map((n, i) => `### Message ${i + 1}\n\n${n.innerText || ""}`);
+      const md = `# OpenCode Chat export\n\n${parts.join("\n\n---\n\n")}\n`;
+      const blob = new Blob([md], { type: "text/markdown" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `opencode-chat-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.md`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <button
+      className="flex items-center gap-1.5 rounded-full border border-border/60 px-3 py-1.5 text-sm transition hover:bg-foreground/[0.05] disabled:opacity-40"
+      disabled={disabled}
+      title={disabled ? "Nothing to export yet" : "Download this chat as Markdown"}
+      onClick={run}
+    >
+      <DownloadIcon className="size-3.5" />
+      <span className="max-sm:hidden">Export</span>
+    </button>
+  );
+}
+
 // Shows onboarding on first run, and a short splash while the AI engine boots
 // on later runs; the chat (and its opencode runtime) mounts once it is ready.
 export function App() {
@@ -168,6 +208,15 @@ function ChatApp() {
 
   useEffect(() => save("model", model), [model]);
   useEffect(() => save("agent", agent), [agent]);
+  // Exposed for the composer's context ring (session tokens vs model limit).
+  useEffect(() => {
+    try {
+      const m = allModels.find((x) => x.providerID === model.providerID && x.modelID === model.modelID);
+      if (m?.contextTokens) window.__ocModelLimit = m.contextTokens;
+    } catch {
+      /* ignore */
+    }
+  }, [model, allModels]);
 
   const refreshModels = () =>
     fetchAllModels()
@@ -204,7 +253,7 @@ function ChatApp() {
       <div className="bg-background text-foreground flex h-screen overflow-hidden">
         {!sideOpen ? null : (
           <aside className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 w-[260px] min-w-[260px] shrink-0 flex-col overflow-hidden border-r border-sidebar-border max-md:fixed max-md:z-50 max-md:h-screen">
-            <ChatSidebar />
+            <ChatSidebar onNavigate={() => { if (typeof window !== "undefined" && window.matchMedia?.("(max-width: 768px)").matches) setSideOpen(false); }} />
             <div className="flex shrink-0 flex-col gap-2 border-t border-sidebar-border p-3">
               <div
                 className={cn(field, "flex overflow-hidden rounded-xl")}
@@ -277,6 +326,7 @@ function ChatApp() {
               connected={connected}
             />
             <div className="flex-1" />
+            <ExportButton />
             <ShareButton />
           </header>
           {!error ? null : (

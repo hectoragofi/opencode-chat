@@ -55,7 +55,7 @@ function readBundled(rel) {
 
 if (IS_EXE) {
   // GUI-subsystem exe has no console; keep a log next to the app data.
-  const logStream = fs.createWriteStream(path.join(APP_DATA, "opencode-chat.log"), { flags: "w" });
+  const logStream = fs.createWriteStream(path.join(APP_DATA, "opencode-chat.log"), { flags: "a" });
   const write = (...a) => logStream.write(a.map(String).join(" ") + "\n");
   console.log = write;
   console.error = write;
@@ -82,9 +82,223 @@ const WORKSPACE_DIR = path.resolve(
   opt("--workspace", IS_EXE ? path.join(os.homedir(), "Documents", "OpenCode Chat") : path.join(SOURCE_DIR, "workspace")),
 );
 const FILES_DIR = path.join(WORKSPACE_DIR, "files");
+const PROJECTS_DIR = path.join(WORKSPACE_DIR, "projects");
+const SKILLS_DIR = path.join(WORKSPACE_DIR, ".opencode", "skills");
+const SESSIONS_MAP_FILE = path.join(PROJECTS_DIR, "sessions.json");
+const MAX_PROJECT_FILE_BYTES = 15 * 1024 * 1024;
+const MAX_SKILL_BYTES = 64 * 1024;
+
+const slugify = (s, fallback = "item") => {
+  const slug = String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, 48);
+  return slug || fallback;
+};
+
+const safeFileName = (s) => {
+  const base = path.basename(String(s || ""));
+  const clean = base.replace(/[^\w.\-()+\[\] ]/g, "_").slice(0, 120);
+  return clean && clean !== "." && clean !== ".." ? clean : "file";
+};
+
+function readJsonBody(req, limitBytes = 20 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limitBytes) {
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (!chunks.length) return resolve({});
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+/* ---------------- projects (Claude-style) ---------------- */
+
+function projectDir(id) {
+  return path.join(PROJECTS_DIR, id);
+}
+
+function readSessionsMap() {
+  try {
+    const raw = fs.readFileSync(SESSIONS_MAP_FILE, "utf8");
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSessionsMap(map) {
+  fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+  fs.writeFileSync(SESSIONS_MAP_FILE, JSON.stringify(map, null, 2));
+}
+
+function listProjectFiles(id) {
+  const dir = path.join(projectDir(id), "files");
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => {
+        const p = path.join(dir, e.name);
+        try {
+          const st = fs.statSync(p);
+          return { name: e.name, size: st.size, mtime: st.mtimeMs };
+        } catch {
+          return { name: e.name, size: 0, mtime: 0 };
+        }
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return [];
+  }
+}
+
+function readProject(id) {
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(id)) return null;
+  const file = path.join(projectDir(id), "project.json");
+  try {
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!data || data.id !== id) return null;
+    return { ...data, files: listProjectFiles(id), fileCount: listProjectFiles(id).length };
+  } catch {
+    return null;
+  }
+}
+
+function listProjects() {
+  try {
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    return fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => readProject(e.name))
+      .filter(Boolean)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } catch {
+    return [];
+  }
+}
+
+// Dedicated opencode agent per project: base chat behaviour plus the
+// project's custom instructions and a pointer at its knowledge files.
+// Switching defaultAgent to `project-<id>` is what puts a chat "inside"
+// the project (same mechanism as the Chat/Agent toggle).
+function syncProjectAgent(project) {
+  try {
+    const base = (readBundled("template/chat-agent.md") || fs.readFileSync(path.join(WORKSPACE_DIR, ".opencode", "agent", "chat.md"), "utf8")).toString();
+    const files = listProjectFiles(project.id);
+    const fileLines = files.length
+      ? files.map((f) => `- \`projects/${project.id}/files/${f.name}\``).join("\n")
+      : "(no knowledge files yet — the user can add some in the project settings)";
+    const extra = `\n\n---\n\n## Project context: ${project.name}\n\nYou are chatting inside the project "${project.name}".${project.description ? ` Project description: ${project.description}` : ""}\n${project.instructions ? `\n### Project instructions (always follow these)\n\n${project.instructions}\n` : "\n(No extra project instructions.)\n"}\n### Project knowledge files\n\nThe user attached these reference files to the project. Consult them when relevant — read the ones that look useful before answering, and cite them when you use them:\n\n${fileLines}\n\nKnowledge files live under \`projects/${project.id}/files/\` (relative to the workspace root). Read them with the read tool; never write there — generated output still goes to \`files/\` as usual.\n`;
+    fs.mkdirSync(path.join(WORKSPACE_DIR, ".opencode", "agent"), { recursive: true });
+    fs.writeFileSync(path.join(WORKSPACE_DIR, ".opencode", "agent", `project-${project.id}.md`), base + extra);
+  } catch (err) {
+    console.error(`[opencode-chat] could not sync agent for project ${project.id}:`, err.message);
+  }
+}
+
+function removeProjectAgent(id) {
+  try {
+    fs.rmSync(path.join(WORKSPACE_DIR, ".opencode", "agent", `project-${id}.md`), { force: true });
+  } catch { /* ignore */ }
+}
+
+/* ---------------- skills (Claude / opencode SKILL.md) ---------------- */
+
+function parseSkillFile(filePath, enabled) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const m = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+    let name = path.basename(path.dirname(filePath));
+    let description = "";
+    let body = raw;
+    if (m) {
+      body = (m[2] || "").trim();
+      for (const line of m[1].split("\n")) {
+        const idx = line.indexOf(":");
+        if (idx < 0) continue;
+        const k = line.slice(0, idx).trim().toLowerCase();
+        const v = line.slice(idx + 1).trim();
+        if (k === "name") name = v;
+        if (k === "description") description = v;
+      }
+    }
+    return { name, description, body, enabled, dir: path.basename(path.dirname(filePath)) };
+  } catch {
+    return null;
+  }
+}
+
+function listSkills() {
+  const out = [];
+  try {
+    fs.mkdirSync(SKILLS_DIR, { recursive: true });
+    for (const entry of fs.readdirSync(SKILLS_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dirName = entry.name;
+      const disabled = dirName.endsWith(".disabled");
+      const realName = disabled ? dirName.slice(0, -9) : dirName;
+      const file = path.join(SKILLS_DIR, dirName, "SKILL.md");
+      if (!fs.existsSync(file)) continue;
+      const parsed = parseSkillFile(file, !disabled);
+      if (parsed) out.push({ ...parsed, dir: dirName, skill: realName });
+    }
+  } catch { /* ignore */ }
+  return out.sort((a, b) => a.skill.localeCompare(b.skill));
+}
+
+function skillDirFor(name, enabled = true) {
+  return path.join(SKILLS_DIR, enabled ? name : `${name}.disabled`);
+}
+
+function findSkillDir(name) {
+  for (const suffix of ["", ".disabled"]) {
+    const d = path.join(SKILLS_DIR, name + suffix);
+    if (fs.existsSync(path.join(d, "SKILL.md"))) return d;
+  }
+  return null;
+}
+
+function buildSkillMarkdown(name, description, body) {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n${String(body || "").trim()}\n`;
+}
 
 function prepareWorkspace() {
   fs.mkdirSync(FILES_DIR, { recursive: true });
+  // Generated files accumulate forever; prune anything older than 30 days
+  // on boot (best effort, never blocks startup).
+  try {
+    const cutoff = Date.now() - 30 * 24 * 3600_000;
+    let pruned = 0;
+    for (const entry of fs.readdirSync(FILES_DIR, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      try {
+        const p = path.join(FILES_DIR, entry.name);
+        if (fs.statSync(p).mtimeMs < cutoff) {
+          fs.rmSync(p);
+          pruned++;
+        }
+      } catch { /* ignore one bad file */ }
+    }
+    if (pruned) console.log(`[opencode-chat] pruned ${pruned} file(s) older than 30 days`);
+  } catch { /* ignore */ }
   fs.mkdirSync(path.join(WORKSPACE_DIR, "scratch"), { recursive: true });
   fs.mkdirSync(path.join(WORKSPACE_DIR, ".opencode", "agent"), { recursive: true });
   const agent = readBundled("template/chat-agent.md");
@@ -417,8 +631,9 @@ function proxyApi(req, res) {
   // Pin every request to the workspace, also when hijacking an opencode
   // server that was started elsewhere.
   if (!headers["x-opencode-directory"]) headers["x-opencode-directory"] = encodeURIComponent(WORKSPACE_DIR);
+  const isSSE = (req.headers.accept || "").includes("text/event-stream");
   const proxy = http.request(
-    { hostname: OPENCODE_HOST, port: opencodePort, path: url.pathname + url.search, method: req.method, headers },
+    { hostname: OPENCODE_HOST, port: opencodePort, path: url.pathname + url.search, method: req.method, headers, timeout: isSSE ? 0 : 120000 },
     (upstream) => {
       // SSE streams pass through untouched (no buffering)
       const outHeaders = { ...upstream.headers };
@@ -427,9 +642,14 @@ function proxyApi(req, res) {
       upstream.pipe(res);
     },
   );
+  proxy.on("timeout", () => {
+    proxy.destroy(new Error("opencode request timed out after 120s"));
+  });
   proxy.on("error", (err) => {
     if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "opencode server unreachable", detail: err.message }));
+    try {
+      res.end(JSON.stringify({ error: "opencode server unreachable", detail: err.message }));
+    } catch { /* client already gone */ }
   });
   req.pipe(proxy);
 }

@@ -115,8 +115,46 @@ body {
 }
 .aui-md th,
 .aui-md td {
-  border: 1px solid #424242;
+  border: 1px solid #e2e2e2;
   padding: 6px 10px;
+  vertical-align: top;
+}
+.dark .aui-md th,
+.dark .aui-md td {
+  border-color: #424242;
+}
+.aui-md th {
+  background: #f4f4f4;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.dark .aui-md th {
+  background: #1c1c1c;
+}
+/* table rendered through the MdTable scroll wrapper (component override) */
+.aui-md .md-table-wrap {
+  margin: 0.6em 0;
+}
+.aui-md .md-table-wrap table {
+  margin: 0;
+  border: 0;
+}
+.aui-md .md-table-wrap th:first-child,
+.aui-md .md-table-wrap td:first-child {
+  border-left: 0;
+}
+.aui-md .md-table-wrap th:last-child,
+.aui-md .md-table-wrap td:last-child {
+  border-right: 0;
+}
+.aui-md .md-table-wrap tr:first-child th,
+.aui-md .md-table-wrap tr:first-child td {
+  border-top: 0;
+}
+.aui-md .md-table-wrap tr:last-child th,
+.aui-md .md-table-wrap tr:last-child td {
+  border-bottom: 0;
 }
 .aui-md blockquote {
   border-left: 3px solid #d4d4d4;
