@@ -236,6 +236,9 @@ function ChatApp() {
                 connectedCount={connected.filter((id) => id !== "opencode").length}
                 onClick={() => setAccountsOpen(true)}
               />
+              <p className="px-1 text-center text-[11px] text-foreground/30">
+                v{typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}
+              </p>
             </div>
           </aside>
         )}
