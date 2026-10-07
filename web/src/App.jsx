@@ -17,7 +17,7 @@ import { chatAttachmentAdapter } from "./attachments.jsx";
 import { DEFAULT_MODEL, FREE_MODELS, fetchAllModels, load, save } from "./models.js";
 import { AccountButton, AccountsDialog } from "./accounts.jsx";
 import { Onboarding, useSetupStatus } from "./onboarding.jsx";
-import { UpdateBanner } from "./updater.jsx";
+import { UpdateBanner, VersionFooter } from "./updater.jsx";
 
 const isFree = (m) =>
   FREE_MODELS.some((f) => f.providerID === m.providerID && f.modelID === m.modelID);
@@ -236,9 +236,7 @@ function ChatApp() {
                 connectedCount={connected.filter((id) => id !== "opencode").length}
                 onClick={() => setAccountsOpen(true)}
               />
-              <p className="px-1 text-center text-[11px] text-foreground/30">
-                v{typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}
-              </p>
+              <VersionFooter />
             </div>
           </aside>
         )}

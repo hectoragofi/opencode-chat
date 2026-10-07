@@ -34,11 +34,12 @@ describe("template", () => {
     assert.match(header, /reportlab.*python-docx.*openpyxl.*python-pptx.*matplotlib/s);
   });
 
-  it("updater feed points at this repo's releases", () => {
+  it("updater feed points at a release feed", () => {
     const conf = JSON.parse(fs.readFileSync(path.join(ROOT, "desktop/src-tauri/tauri.conf.json"), "utf8"));
     assert.equal(conf.plugins?.updater?.active, true);
     assert.match(conf.plugins.updater.pubkey, /^[A-Za-z0-9+/=]+$/, "pubkey must be set");
-    const urls = conf.plugins.updater.endpoints.map((e) => e.url).join("\n");
-    assert.match(urls, /github\.com\/hectoragofi\/opencode-chat\/releases\/.*latest\.json/);
+    // Endpoints are plain URL strings (this plugin version rejects {url, headers} maps).
+    const urls = conf.plugins.updater.endpoints.map((e) => (typeof e === "string" ? e : e.url)).join("\n");
+    assert.match(urls, /github\.com\/hectoragofi\/opencode-chat(-updates)?\/releases\/.*latest\.json/);
   });
 });

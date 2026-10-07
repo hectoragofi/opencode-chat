@@ -8,10 +8,32 @@ import { cn } from "@/lib/utils";
 const isTauri = () =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// One found update shared between the auto-check banner and the manual
+// version-footer check, so either entry point surfaces the same banner.
+let sharedUpdate = null;
+const sharedListeners = new Set();
+function announceUpdate(u) {
+  sharedUpdate = u;
+  sharedListeners.forEach((fn) => fn(u));
+}
+function useSharedUpdate() {
+  const [u, setU] = useState(sharedUpdate);
+  useEffect(() => {
+    sharedListeners.add(setU);
+    return () => sharedListeners.delete(setU);
+  }, []);
+  return [u, announceUpdate];
+}
+
+export async function checkForUpdates() {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  return check();
+}
+
 // Checks for an app update shortly after launch and offers a one-click
 // install (download with progress, then relaunch into the new version).
 export function UpdateBanner() {
-  const [update, setUpdate] = useState(null);
+  const [update, setUpdate] = useSharedUpdate();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(null); // { done, total }
   const [error, setError] = useState(null);
@@ -23,8 +45,7 @@ export function UpdateBanner() {
     // Wait for boot to settle before hitting the network.
     const timer = setTimeout(async () => {
       try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const u = await check();
+        const u = await checkForUpdates();
         if (!cancelled && u) setUpdate(u);
       } catch {
         /* offline, no release feed, or dev build without a token — stay silent */
@@ -34,7 +55,7 @@ export function UpdateBanner() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [setUpdate]);
 
   if (!isTauri() || dismissed || !update) return null;
 
@@ -122,5 +143,46 @@ function stripMarkdown(s) {
     .replace(/[#*_`>\[\]()]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// Sidebar version footer. Clicking re-checks on demand (the banner only
+// appears when an update actually exists); a quiet note confirms the rest.
+export function VersionFooter() {
+  const [, announce] = useSharedUpdate();
+  const [state, setState] = useState("idle"); // idle | checking | current | failed
+  const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
+  const recheck = async () => {
+    if (!isTauri() || state === "checking") return;
+    setState("checking");
+    try {
+      const u = await checkForUpdates();
+      if (u) announce(u);
+      else setState("current");
+    } catch {
+      setState("failed");
+    }
+  };
+  useEffect(() => {
+    if (state === "current" || state === "failed") {
+      const t = setTimeout(() => setState("idle"), 2500);
+      return () => clearTimeout(t);
+    }
+  }, [state]);
+  return (
+    <button
+      className="px-1 text-center text-[11px] text-foreground/30 transition hover:text-foreground/60"
+      title={isTauri() ? "Check for updates" : "Desktop app checks for updates on launch"}
+      onClick={recheck}
+    >
+      v{appVersion}
+      {state === "checking"
+        ? " · checking…"
+        : state === "current"
+          ? " · up to date ✓"
+          : state === "failed"
+            ? " · check failed"
+            : ""}
+    </button>
+  );
 }
 

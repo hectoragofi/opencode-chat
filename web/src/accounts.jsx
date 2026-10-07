@@ -254,14 +254,32 @@ function ConnectForm({ providerID, methods, keyUrl, onDone }) {
   );
 }
 
-function ProviderRow({ id, name, blurb, keyUrl, connected, methods, open, onToggle, onChanged }) {
+function ProviderRow({ id, name, blurb, keyUrl, connected, source, methods, open, onToggle, onChanged }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const envManaged = connected && source === "environment";
   const disconnect = async () => {
     setBusy(true);
+    setError(null);
     try {
       await api(`/auth/${id}`, { method: "DELETE" });
-      await reloadProviders();
-      await onChanged();
+      // The engine can keep reporting a removed provider as connected for a
+      // while (stale state cache), so poll until it drops out of the list.
+      let stillThere = true;
+      for (let i = 0; i < 5 && stillThere; i++) {
+        await reloadProviders().catch(() => {});
+        await onChanged();
+        await new Promise((r) => setTimeout(r, 700));
+        const prov = await api("/provider").catch(() => null);
+        stillThere = !!prov?.connected?.includes(id);
+      }
+      if (stillThere) {
+        setError(
+          "Credentials were deleted, but the engine still lists this provider as connected. Restart the app; if it persists, the key comes from an environment variable, which can only be removed by unsetting it."
+        );
+      }
+    } catch (e) {
+      setError(`Couldn't disconnect: ${String(e?.message || e)}`);
     } finally {
       setBusy(false);
     }
@@ -280,14 +298,21 @@ function ProviderRow({ id, name, blurb, keyUrl, connected, methods, open, onTogg
           </div>
           {!blurb ? null : <p className="text-xs text-foreground/50">{blurb}</p>}
         </div>
-        {connected ? (
+        {envManaged ? (
+          <span
+            className="shrink-0 rounded-full bg-foreground/[0.05] px-2.5 py-1 text-xs text-foreground/45"
+            title="This credential comes from an environment variable. Unset the variable to disconnect."
+          >
+            via env var
+          </span>
+        ) : connected ? (
           <button
             className="shrink-0 rounded-full px-2.5 py-1 text-xs text-foreground/55 transition hover:bg-foreground/[0.06] hover:text-red-400 disabled:opacity-40"
             disabled={busy}
             onClick={disconnect}
             title="Removes credentials saved by opencode. Keys set as environment variables stay active."
           >
-            Disconnect
+            {busy ? "Working…" : "Disconnect"}
           </button>
         ) : (
           <button
@@ -298,6 +323,7 @@ function ProviderRow({ id, name, blurb, keyUrl, connected, methods, open, onTogg
           </button>
         )}
       </div>
+      {!error ? null : <p className="mt-1.5 text-xs text-red-400">{error}</p>}
       {!open || connected ? null : (
         <ConnectForm
           providerID={id}
@@ -346,6 +372,7 @@ export function ProviderList({ onChanged, exclude = [] }) {
       : providers.filter((p) => !FEATURED[p.id] && connected.includes(p.id)).map((p) => p.id);
     return [...featured, ...others].map((id) => ({
       id,
+      source: byId[id]?.source,
       name: FEATURED[id]?.name || byId[id]?.name || id,
       blurb: FEATURED[id]?.blurb,
       keyUrl: FEATURED[id]?.keyUrl,
@@ -406,7 +433,7 @@ export function AccountsDialog({ onClose, onChanged }) {
             <XIcon className="size-4" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+        <div className="min-h-0 flex-1 scroll-pane overflow-y-auto px-5 pb-5">
           <ProviderList onChanged={onChanged} />
         </div>
       </div>

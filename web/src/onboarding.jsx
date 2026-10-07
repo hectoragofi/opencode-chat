@@ -48,7 +48,7 @@ const secondary =
 
 function Shell({ step, total, children }) {
   return (
-    <div className="bg-background text-foreground h-screen overflow-y-auto">
+    <div className="bg-background text-foreground h-screen scroll-pane overflow-y-auto">
       <div className="flex min-h-full items-center justify-center p-6">
       <div className="fade-in slide-in-from-bottom-2 animate-in flex w-full max-w-md flex-col gap-6 duration-500">
         {total ? (

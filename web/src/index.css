@@ -23,6 +23,16 @@ body {
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.55;
+  /* The app is a fixed h-screen layout with its own scroll regions;
+     the page itself must never scroll or pass scroll chaining outward. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Scrollable panes keep wheel/touch scroll to themselves instead of
+   shoving the whole interface around at the edges. */
+.scroll-pane {
+  overscroll-behavior: contain;
 }
 
 /* slim dark scrollbars */

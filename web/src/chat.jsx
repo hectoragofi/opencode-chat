@@ -67,7 +67,7 @@ export function ChatSidebar() {
       <div className="shrink-0 px-5 pb-1.5 font-mono text-[11px] tracking-tight text-foreground/35">
         Chats
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div className="min-h-0 flex-1 scroll-pane overflow-y-auto px-2 pb-2">
         <ThreadListPrimitive.Items className="flex flex-col gap-px">
           {() => (
             <ThreadListItemPrimitive.Root className="group flex items-center gap-1 rounded-lg transition-colors hover:bg-foreground/[0.05] data-active:bg-foreground/[0.07]">
@@ -122,8 +122,34 @@ function preprocessMath(text) {
   return isolateDisplayMath(normalizeMathDelimiters(text));
 }
 
-// Files the chat agent generates land in workspace/files and are linked as
-// /files/<name>; render those links as download cards instead of plain text.
+// Files the chat agent generates land in workspace/files and are served back
+// at /files/<name>. Anything pointing there — relative links, absolute links
+// to this machine on any port (the UI and the engine don't share one), or
+// bare paths the model forgot to linkify — renders as a rich card.
+function toFilesPath(href) {
+  if (typeof href !== "string") return null;
+  if (href.startsWith("/files/")) return href;
+  // Same machine, any port: the desktop shell and `node server.mjs` disagree
+  // on ports, and models copy whichever URL they saw. Never rewrite the
+  // open web this way — only loopback hosts can be our own file server.
+  const m = href.match(/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/files\/[^?#]*)(\?[^#]*)?/i);
+  return m ? m[3] + (m[4] || "") : null;
+}
+
+// Models often emit bare `/files/report.pdf` paths instead of Markdown links.
+// Linkify them (outside code spans/blocks and existing link targets) so they
+// still become cards instead of dead text.
+function linkifyBareFilePaths(text) {
+  return text
+    .split(PROTECTED_SEGMENT)
+    .map((seg, i) =>
+      i % 2 === 1
+        ? seg
+        : seg.replace(/(^|[\s>])(\/files\/[^\s)>\]\"']+)/g, "$1[$2]($2)"),
+    )
+    .join("");
+}
+
 const FILE_KINDS = {
   pdf: { Icon: FileTextIcon, label: "PDF", tint: "text-red-400" },
   docx: { Icon: FileTextIcon, label: "Word", tint: "text-blue-400" },
@@ -136,37 +162,92 @@ const FILE_KINDS = {
   svg: { Icon: ImageIcon, label: "Image", tint: "text-purple-400" },
 };
 
-function FileLink({ href, children, node: _node, ...rest }) {
-  if (typeof href !== "string" || !href.startsWith("/files/")) {
-    return <a href={href} target="_blank" rel="noreferrer" {...rest}>{children}</a>;
-  }
-  const name = decodeURIComponent(href.split("?")[0].split("/").pop() || "file");
-  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
-  const kind = FILE_KINDS[ext] || { Icon: FileIcon, label: ext.toUpperCase() || "File", tint: "text-foreground/60" };
-  const canPreview = ["pdf", "png", "jpg", "jpeg", "svg", "csv", "txt", "md"].includes(ext);
+const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
+
+function CardActions({ path, name }) {
   return (
-    <span className={cn(field, "not-prose my-1 inline-flex max-w-full items-center gap-3 rounded-2xl py-2 pl-3 pr-2 align-middle no-underline")}>
-      <kind.Icon className={cn("size-6 shrink-0", kind.tint)} />
-      <span className="flex min-w-0 flex-col leading-tight">
-        <span className="truncate text-sm font-medium text-foreground">{name}</span>
-        <span className="font-mono text-[11px] text-foreground/45">{kind.label}</span>
-      </span>
-      {!canPreview ? null : (
-        <a href={href} target="_blank" rel="noreferrer" className={cn(ghostButton, "size-8")} title="Open">
-          <ExternalLinkIcon className="size-4" />
-        </a>
-      )}
-      <a href={`${href}?download=1`} download={name} className={cn(ghostButton, "size-8")} title="Download">
+    <span className="flex shrink-0 items-center gap-1">
+      <a href={path} target="_blank" rel="noreferrer" className={cn(ghostButton, "size-8")} title="Open">
+        <ExternalLinkIcon className="size-4" />
+      </a>
+      <a href={`${path}${path.includes("?") ? "&" : "?"}download=1`} download={name} className={cn(ghostButton, "size-8")} title="Download">
         <DownloadIcon className="size-4" />
       </a>
     </span>
   );
 }
 
+// Generated images render inline, ChatGPT-style, with open/download actions.
+function FileImage({ path, name, alt }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <FileCard path={path} name={name} ext="png" />;
+  return (
+    <span className="not-prose my-2 block max-w-full no-underline">
+      <a href={path} target="_blank" rel="noreferrer" className="block w-max max-w-full overflow-hidden rounded-xl border border-border/60">
+        <img
+          src={path}
+          alt={alt || name}
+          onError={() => setFailed(true)}
+          className="block max-h-[420px] w-auto max-w-full object-contain"
+        />
+      </a>
+      <span className="mt-1 flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-xs text-foreground/45">{name}</span>
+        <CardActions path={path} name={name} />
+      </span>
+    </span>
+  );
+}
+
+function FileCard({ path, name, ext }) {
+  const [preview, setPreview] = useState(false);
+  const kind = FILE_KINDS[ext] || { Icon: FileIcon, label: ext.toUpperCase() || "File", tint: "text-foreground/60" };
+  const canPreview = ext === "pdf";
+  return (
+    <span className={cn(field, "not-prose my-2 block max-w-full rounded-2xl p-2 no-underline")}>
+      <span className="flex items-center gap-3 pl-1">
+        <kind.Icon className={cn("size-6 shrink-0", kind.tint)} />
+        <span className="flex min-w-0 flex-1 flex-col leading-tight">
+          <span className="truncate text-sm font-medium text-foreground">{name}</span>
+          <span className="font-mono text-[11px] text-foreground/45">{kind.label}</span>
+        </span>
+        {!canPreview ? null : (
+          <button
+            className={cn(ghostButton, "size-8")}
+            title={preview ? "Hide preview" : "Preview"}
+            onClick={() => setPreview((v) => !v)}
+          >
+            <ChevronDownIcon className={cn("size-4 transition-transform", preview && "rotate-180")} />
+          </button>
+        )}
+        <CardActions path={path} name={name} />
+      </span>
+      {!preview || !canPreview ? null : (
+        <iframe src={path} title={name} className="mt-2 h-96 w-full rounded-xl border border-border/60 bg-white" />
+      )}
+    </span>
+  );
+}
+
+function FileLink({ href, children, node: _node, ...rest }) {
+  const path = toFilesPath(href);
+  if (!path) {
+    return <a href={href} target="_blank" rel="noreferrer" {...rest}>{children}</a>;
+  }
+  const name = decodeURIComponent(path.split("?")[0].split("/").pop() || "file");
+  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+  if (IMAGE_EXTS.includes(ext)) return <FileImage path={path} name={name} alt={typeof children === "string" ? children : undefined} />;
+  return <FileCard path={path} name={name} ext={ext} />;
+}
+
 const markdownComponents = {
   a: FileLink,
-  img: ({ node: _node, ...props }) => (
-    <img {...props} className="my-2 max-h-[480px] max-w-full rounded-xl border border-border/60" />
+  img: ({ node: _node, src, ...props }) => (
+    <img
+      {...props}
+      src={toFilesPath(src) || src}
+      className="my-2 max-h-[480px] max-w-full rounded-xl border border-border/60"
+    />
   ),
 };
 
@@ -175,7 +256,7 @@ function MarkdownWithMath(props) {
     <MarkdownTextPrimitive
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
-      preprocess={preprocessMath}
+      preprocess={(text) => linkifyBareFilePaths(preprocessMath(text))}
       components={markdownComponents}
       {...props}
     />
@@ -201,21 +282,66 @@ function UserText({ text }) {
       </details>
     );
   }
-  return <span className="whitespace-pre-wrap">{text}</span>;
+  return (
+    <div
+      className={cn(
+        field,
+        "fade-in slide-in-from-bottom-1 animate-in rounded-2xl rounded-br-lg px-3.5 py-2 text-[14.5px] duration-300",
+      )}
+    >
+      <span className="whitespace-pre-wrap">{text}</span>
+    </div>
+  );
+}
+
+// Attached photos/files on the user's own messages. The text bubble stays in
+// UserText; images and files render as their own right-aligned blocks above
+// or below it, ChatGPT-style.
+function UserImage({ image, filename }) {
+  if (!image) return null;
+  return (
+    <a
+      href={image}
+      target="_blank"
+      rel="noreferrer"
+      title={filename || "Open image"}
+      className="block max-w-60 overflow-hidden rounded-xl border border-border/60"
+    >
+      <img src={image} alt={filename || "Attached image"} className="block max-h-60 w-auto object-cover" />
+    </a>
+  );
+}
+
+function UserFile({ filename, data, mimeType }) {
+  const name = filename || "Attached file";
+  const looksImage =
+    (mimeType || "").startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
+  if (looksImage && data) return <UserImage image={data} filename={name} />;
+  if (!data) {
+    return (
+      <span className={cn(field, "flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs")}>
+        <FileIcon className="size-3.5 shrink-0 text-foreground/55" />
+        <span className="max-w-48 truncate font-medium">{name}</span>
+      </span>
+    );
+  }
+  return (
+    <a
+      href={data}
+      download={name}
+      className={cn(field, "flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs transition hover:bg-foreground/[0.06]")}
+    >
+      <FileIcon className="size-3.5 shrink-0 text-foreground/55" />
+      <span className="max-w-48 truncate font-medium">{name}</span>
+    </a>
+  );
 }
 
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="group mx-auto flex w-full max-w-3xl justify-end px-4 py-2.5">
-      <div className="flex min-w-0 max-w-[85%] flex-col items-end">
-        <div
-          className={cn(
-            field,
-            "fade-in slide-in-from-bottom-1 animate-in rounded-2xl rounded-br-lg px-3.5 py-2 text-[14.5px] duration-300",
-          )}
-        >
-          <MessagePrimitive.Parts components={{ Text: UserText }} />
-        </div>
+      <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5">
+        <MessagePrimitive.Parts components={{ Text: UserText, Image: UserImage, File: UserFile }} />
         <ActionBarPrimitive.Root className="mt-0.5 flex gap-0.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
           <ActionBarPrimitive.Edit
             className={cn(ghostButton, "size-7")}
@@ -562,7 +688,7 @@ export function ModelMenu({ model, onPick, allModels, connected }) {
                 className="w-full rounded-xl border border-border/60 bg-background px-3 py-1.5 text-sm outline-none placeholder:text-foreground/35"
               />
             </div>
-            <div className="max-h-[50vh] overflow-y-auto">
+            <div className="max-h-[50vh] scroll-pane overflow-y-auto">
               <ModelPicker
                 models={items}
                 selectedId={`${model.providerID}/${model.modelID}`}
@@ -673,7 +799,7 @@ export function Composer() {
 export function ChatThread() {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col">
-      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 scroll-pane flex-col overflow-y-auto">
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <div className="flex min-h-full flex-col items-center justify-center px-4">
             <h1 className="fade-in slide-in-from-bottom-2 animate-in fill-mode-both text-center text-[28px] font-medium tracking-tight duration-500">
