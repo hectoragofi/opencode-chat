@@ -150,39 +150,51 @@ function stripMarkdown(s) {
 export function VersionFooter() {
   const [, announce] = useSharedUpdate();
   const [state, setState] = useState("idle"); // idle | checking | current | failed
+  const [detail, setDetail] = useState("");
   const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
   const recheck = async () => {
     if (!isTauri() || state === "checking") return;
     setState("checking");
+    setDetail("");
     try {
       const u = await checkForUpdates();
       if (u) announce(u);
       else setState("current");
-    } catch {
+    } catch (e) {
+      const msg = String(e?.message || e);
+      console.error("[updater] check failed:", msg);
+      setDetail(msg.slice(0, 220));
       setState("failed");
     }
   };
   useEffect(() => {
-    if (state === "current" || state === "failed") {
+    if (state === "current") {
       const t = setTimeout(() => setState("idle"), 2500);
       return () => clearTimeout(t);
     }
   }, [state]);
   return (
-    <button
-      className="px-1 text-center text-[11px] text-foreground/30 transition hover:text-foreground/60"
-      title={isTauri() ? "Check for updates" : "Desktop app checks for updates on launch"}
-      onClick={recheck}
-    >
-      v{appVersion}
-      {state === "checking"
-        ? " · checking…"
-        : state === "current"
-          ? " · up to date ✓"
-          : state === "failed"
-            ? " · check failed"
-            : ""}
-    </button>
+    <span className="flex flex-col items-center gap-0.5 px-1">
+      <button
+        className="text-center text-[11px] text-foreground/30 transition hover:text-foreground/60"
+        title={isTauri() ? "Check for updates" : "Desktop app checks for updates on launch"}
+        onClick={recheck}
+      >
+        v{appVersion}
+        {state === "checking"
+          ? " · checking…"
+          : state === "current"
+            ? " · up to date ✓"
+            : state === "failed"
+              ? " · check failed"
+              : ""}
+      </button>
+      {!detail || state !== "failed" ? null : (
+        <span className="max-w-56 break-words text-center font-mono text-[10px] leading-snug text-red-400/80">
+          {detail}
+        </span>
+      )}
+    </span>
   );
 }
 
