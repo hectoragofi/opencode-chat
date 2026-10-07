@@ -17,6 +17,7 @@ import { chatAttachmentAdapter } from "./attachments.jsx";
 import { DEFAULT_MODEL, FREE_MODELS, fetchAllModels, load, save } from "./models.js";
 import { AccountButton, AccountsDialog } from "./accounts.jsx";
 import { Onboarding, useSetupStatus } from "./onboarding.jsx";
+import { UpdateBanner } from "./updater.jsx";
 
 const isFree = (m) =>
   FREE_MODELS.some((f) => f.providerID === m.providerID && f.modelID === m.modelID);
@@ -242,6 +243,7 @@ function ChatApp() {
           <AccountsDialog onClose={() => setAccountsOpen(false)} onChanged={refreshModels} />
         )}
         <main className="bg-background flex min-h-0 min-w-0 flex-1 flex-col">
+          <UpdateBanner />
           <header className="flex items-center gap-1 px-3 py-2">
             <button
               className="rounded-lg p-2 text-foreground/55 transition hover:bg-foreground/[0.05] hover:text-foreground"

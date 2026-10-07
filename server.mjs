@@ -31,7 +31,11 @@ try {
 const IS_EXE = !!sea;
 
 // In the exe there is no source tree; in dev everything is next to this file.
-const SOURCE_DIR = IS_EXE ? path.dirname(process.execPath) : path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// path.normalize keeps separators consistent so the startsWith() guard in
+// readBundled() works on Windows (mixed / and \ never match).
+const SOURCE_DIR = path.normalize(
+  IS_EXE ? path.dirname(process.execPath) : path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")),
+);
 const APP_DATA = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), ".local", "share"), "OpenCodeChat");
 fs.mkdirSync(APP_DATA, { recursive: true });
 

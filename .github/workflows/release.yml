@@ -1,0 +1,112 @@
+# Builds the Windows installer + auto-update artifacts on version tags.
+#
+#   git tag v1.1.0 && git push origin v1.1.0
+#
+# The workflow stamps the version (from the tag) into package.json,
+# tauri.conf.json and Cargo.toml, builds everything, and creates a DRAFT
+# GitHub release with:
+#   - OpenCode Chat_<version>_x64-setup.exe   (full installer)
+#   - *.nsis.zip + *.nsis.zip.sig             (auto-update bundle)
+#   - latest.json                             (auto-update feed)
+#
+# Review the draft, then press Publish — publishing is what makes the
+# desktop app offer the update (it polls releases/latest/download/latest.json).
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           full contents of the updater private key file
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
+#   UPDATE_PAT  fine-grained PAT, contents:read on this repo only.
+#               Baked into the updater feed URL headers at build time so the
+#               app can poll releases on this PRIVATE repo. If the repo ever
+#               goes public, this can be removed (and the headers with it).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp version from tag
+        shell: node {0}
+        env:
+          TAG: ${{ github.ref_name }}
+          UPDATE_PAT: ${{ secrets.UPDATE_PAT }}
+        run: |
+          const fs = require("node:fs");
+          const version = process.env.TAG.replace(/^v/, "");
+          if (!/^\d+\.\d+\.\d+/.test(version)) throw new Error(`bad tag: ${process.env.TAG}`);
+          // root package.json (also stamps the sidecar exe via build-exe.mjs)
+          const pkgPath = "package.json";
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+          pkg.version = version;
+          fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+          // tauri.conf.json (the version the updater compares against)
+          const confPath = "desktop/src-tauri/tauri.conf.json";
+          const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+          conf.version = version;
+          let confText = JSON.stringify(conf, null, 2) + "\n";
+          confText = confText.replace("__UPDATE_TOKEN__", process.env.UPDATE_PAT);
+          if (confText.includes("__UPDATE_TOKEN__")) throw new Error("UPDATE_PAT secret is empty");
+          fs.writeFileSync(confPath, confText);
+          // Cargo.toml (keep in sync; tauri falls back to it)
+          const cargoPath = "desktop/src-tauri/Cargo.toml";
+          fs.writeFileSync(
+            cargoPath,
+            fs.readFileSync(cargoPath, "utf8").replace(/^version = ".*"/m, `version = "${version}"`),
+          );
+          console.log(`stamped version ${version}`);
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            desktop/package-lock.json
+
+      - name: Build web UI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build sidecar server exe
+        run: |
+          npm ci
+          npm run build:exe -- --skip-web
+
+      - name: Stage sidecar for Tauri
+        shell: pwsh
+        run: |
+          Copy-Item dist/OpenCodeChat.exe `
+            -Destination desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe -Force
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build installer + updater artifacts
+        uses: tauri-apps/tauri-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: v__VERSION__
+          releaseName: "v__VERSION__"
+          releaseBody: "See the assets below to download and install. The desktop app updates itself automatically once this release is published."
+          releaseDraft: true
+          prerelease: false
+          updaterJsonKeepUniversal: true
+          args: --target x86_64-pc-windows-msvc

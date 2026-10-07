@@ -30,6 +30,11 @@ fn main() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        // Silent background updates from our GitHub releases feed
+        // (see plugins.updater in tauri.conf.json). The frontend drives
+        // check/download/install via JS so it can show progress.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Server(Mutex::new(None)))
         .setup(|app| {
             let opener = app.handle().clone();

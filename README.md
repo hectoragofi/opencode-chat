@@ -88,6 +88,14 @@ Useful flags / env vars:
 | `OPENCODE_BIN` | auto-detected | Explicit path to the opencode executable |
 | `OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD` | — | Forwarded to `opencode serve` as basic auth |
 
+## 🔄 Updates
+
+The desktop app checks `releases/latest/download/latest.json` shortly after
+launch (desktop shell only — the browser tab does nothing). When an update is
+found, a banner offers one-click **Install & relaunch** with a progress bar.
+Updates are signature-verified against a baked-in public key, so only
+releases built by CI are accepted.
+
 ## 📦 Building the distributables
 
 ```sh
@@ -100,6 +108,42 @@ and produces `desktop/src-tauri/target/release/bundle/nsis/*-setup.exe`.
 
 > The committed `dist/` and Tauri `target/` folders are **not** in git
 > (see `.gitignore`) — build them locally. `dist/` exes are ~90 MB each.
+
+## 🚢 Releasing
+
+Releases are built by CI. To ship a new version:
+
+```sh
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+The `Release` workflow stamps the version everywhere, builds the installer +
+auto-update bundle (`*-setup.exe`, `.nsis.zip`, `latest.json`), and creates a
+**draft** release. Review it, press **Publish** — publishing is what makes
+installed apps offer the update.
+
+One-time setup (repo Settings → Secrets → Actions):
+
+| Secret | Value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Full contents of the updater private key |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password |
+| `UPDATE_PAT` | Fine-grained PAT, **contents:read on this repo only** — baked into the app at build time so it can poll releases on this private repo |
+
+The signing keys live **outside** the repo in `~/.tauri/` (never commit them).
+If they are lost, generate new ones with `npx tauri signer generate`, put the
+new public key in `tauri.conf.json`, and replace the secrets — but note that
+apps already installed will reject updates signed with a different key.
+
+## 🧪 Tests
+
+```sh
+npm test   # node:test smoke suite: server HTTP layer + template checks
+```
+
+Covers health/setup endpoints, static UI serving, `/files/` traversal guards,
+the `/api/*` boot gate, and the workspace template. It boots a real server on
+throwaway ports — the opencode engine itself is not required.
 
 ## 📁 Project structure
 

@@ -74,6 +74,8 @@ run(process.execPath, ["--experimental-sea-config", seaConfig]);
 fs.copyFileSync(process.execPath, EXE);
 
 console.log("> setting icon and version info");
+// Single source of truth: root package.json version (CI stamps it from the git tag).
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 const { rcedit } = await import("rcedit");
 await rcedit(EXE, {
   icon: path.join(ROOT, "template", "icon.ico"),
@@ -83,8 +85,8 @@ await rcedit(EXE, {
     CompanyName: "",
     OriginalFilename: "OpenCodeChat.exe",
   },
-  "file-version": "1.0.0",
-  "product-version": "1.0.0",
+  "file-version": APP_VERSION,
+  "product-version": APP_VERSION,
 });
 
 console.log("> injecting blob");

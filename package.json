@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs --open",
+    "test": "node --test test/server.test.mjs test/template.test.mjs",
     "build:exe": "node build-exe.mjs",
     "app": "node server.mjs --app",
     "build:desktop": "node build-exe.mjs && node -e \"require('fs').copyFileSync('dist/OpenCodeChat.exe','desktop/src-tauri/binaries/opencode-chat-server-x86_64-pc-windows-msvc.exe')\" && cd desktop && npx tauri build"

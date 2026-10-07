@@ -10,6 +10,24 @@
     "windows": [],
     "security": { "csp": null }
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDNEJFQjFFMTZCMEQwRDgKUldUWTBMQVdIdXRMTExTMWx5aGJnU1JrTnorTXV5MUt1Z2VaRnNsS0xnd2xENDFaUFN3TW53TXMK",
+      "endpoints": [
+        {
+          "url": "https://github.com/hectoragofi/opencode-chat/releases/latest/download/latest.json",
+          "headers": {
+            "Authorization": "Bearer __UPDATE_TOKEN__"
+          }
+        }
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
