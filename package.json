@@ -1,6 +1,6 @@
 {
   "name": "opencode-chat",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "ChatGPT-style web GUI that hijacks opencode serve and chats with free models",
   "type": "module",
   "scripts": {

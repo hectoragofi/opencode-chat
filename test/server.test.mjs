@@ -122,6 +122,16 @@ describe("server", () => {
       `unexpected phase: ${status.phase}`,
     );
     assert.equal(typeof status.message, "string");
+    // Engine lifecycle reporting (up / starting / sleeping) rides along.
+    assert.equal(typeof status.engine, "string");
+    assert.ok(["up", "starting", "sleeping"].includes(status.engine));
+  });
+
+  it("gates /api/* while waking without crashing (503 with setup payload)", async () => {
+    const res = await request(port, "GET", "/api/__opencode_chat_smoke__");
+    assert.ok([404, 503].includes(res.status), `unexpected status: ${res.status}`);
+    const payload = JSON.parse(res.text);
+    if (res.status === 503) assert.ok(payload.setup && typeof payload.setup.phase === "string");
   });
 
   it("serves the chat UI at /", async () => {

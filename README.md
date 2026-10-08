@@ -70,7 +70,7 @@ The backend requires zero manual configuration: on first launch it provisions th
 | Native file output | PDF (`reportlab`), Word (`python-docx`), Excel (`openpyxl`), PowerPoint (`python-pptx`), charts (`matplotlib`). |
 | Zero-install toolchain | Python and all document libraries are provisioned automatically via [`uv`](https://github.com/astral-sh/uv); no user-side Python setup required. |
 | Verified delivery | The agent executes the generation script, confirms the artifact exists, then replies with a summary and a `/files/...` download link. |
-| Background warm-up | The document environment is pre-warmed after boot so the first document request is fast. |
+| Lazy warm-up | The document environment is provisioned on the first chat request (not at boot) so quiet starts skip the ~200 MB `uv` spike. Disable entirely with `--no-warmup`. |
 
 ### Backend and Platform
 
@@ -153,6 +153,8 @@ Command-line flags and environment variables. Flags take precedence where both a
 |---|---|---|
 | `--web-port` / `OPENCODE_CHAT_PORT` | `8787` | Port serving the chat UI. Falls back to a free port if occupied. |
 | `--opencode-port` / `OPENCODE_PORT` | `4096` | Port for the managed `opencode serve` instance. Falls back to a free port if occupied. |
+| `--opencode-idle-mins` / `OPENCODE_IDLE_MINS` | `15` | Idle minutes without chat traffic before the engine is stopped to save ~500 MB RAM. Wakes transparently on the next message (adds a few seconds). `0` keeps it resident. |
+| `--no-warmup` / `OPENCODE_NO_WARMUP=1` | lazy | Skip the Python document-toolchain warm-up entirely (by default it runs lazily on the first chat request instead of at boot). |
 | `--workspace` | `./workspace` (dev) · `Documents\OpenCode Chat` (packaged exe) | Workspace root: agent definition, configuration, and generated files. |
 | `--open` | None | Open the UI in the default browser after boot. |
 | `--app` | None | Open the UI in a chromeless app window with an isolated browser profile. Implied for packaged builds. |

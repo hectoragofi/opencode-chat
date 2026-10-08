@@ -76,6 +76,14 @@ const SHOULD_OPEN = args.includes("--open");
 const SIDECAR = args.includes("--sidecar");
 const APP_WINDOW = !SIDECAR && (IS_EXE || args.includes("--app"));
 
+// Idle shutdown: stop the opencode engine after N minutes without /api
+// traffic (its ~500 MB goes back to the OS) and wake it on the next request.
+// 0 disables (engine stays resident, the old behaviour).
+const _rawIdle = opt("--opencode-idle-mins", process.env.OPENCODE_IDLE_MINS ?? "15");
+let IDLE_MINS = Number(_rawIdle);
+if (!Number.isFinite(IDLE_MINS) || IDLE_MINS < 0) IDLE_MINS = 15;
+const NO_WARMUP = args.includes("--no-warmup") || process.env.OPENCODE_NO_WARMUP === "1";
+
 // opencode runs in the workspace: it holds the "chat" agent definition
 // (.opencode/agent) and the files it generates (files/), served at /files/*.
 const WORKSPACE_DIR = path.resolve(
@@ -353,6 +361,13 @@ const BASIC_AUTH = SERVER_PASS
 let opencodePort = PREFERRED_OPENCODE_PORT;
 let child = null;
 
+// Idle bookkeeping. engineSleeping means WE stopped our engine to save RAM
+// (phase stays "ready" so the UI keeps the chat mounted; the next /api call
+// wakes it and waits). Only ever set when child != null, i.e. we own it.
+let lastApiAt = Date.now();
+let engineSleeping = false;
+let warmupScheduled = false;
+
 // Shown by the onboarding screen while opencode is fetched / booted.
 const setup = { phase: "starting", progress: 0, message: "Starting…", error: null };
 const setPhase = (phase, message, progress = 0) => Object.assign(setup, { phase, message, progress });
@@ -572,6 +587,8 @@ async function ensureOpencode() {
   });
   child.on("error", (err) => console.error("[opencode-chat] failed to spawn opencode:", err.message));
   child.on("exit", (code, signal) => {
+    // Idle shutdown and app quit stop the engine on purpose — not an error.
+    if (engineSleeping || shuttingDown) return;
     if (code !== 0 && code !== null) {
       console.error(`[opencode-chat] opencode exited unexpectedly with code ${code}`);
       // The UI only proxies while phase === "ready"; flip to error so the
@@ -580,7 +597,7 @@ async function ensureOpencode() {
         setPhase("error", "The AI engine stopped unexpectedly");
         setup.error = `opencode exited with code ${code}. Press Retry to restart it — your chats are stored on disk and will reappear.`;
       }
-    } else if (setup.phase === "ready" && !shuttingDown) {
+    } else if (setup.phase === "ready") {
       // Killed by signal (or code 0) while we were serving: same handling.
       console.error(`[opencode-chat] opencode process ended (${signal || "code 0"}) while serving`);
       setPhase("error", "The AI engine stopped unexpectedly");
@@ -670,7 +687,41 @@ function json(res, status, data) {
 }
 
 function proxyApi(req, res) {
-  if (setup.phase !== "ready") return json(res, 503, { error: "opencode is still starting", setup });
+  proxyApiAsync(req, res).catch((err) => {
+    console.error(`[opencode-chat] proxy failure: ${err.message}`);
+    if (!res.headersSent && !req.destroyed) {
+      try {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "request failed", detail: err.message }));
+      } catch { /* client gone */ }
+    }
+  });
+}
+
+async function proxyApiAsync(req, res) {
+  lastApiAt = Date.now();
+  scheduleWarmup();
+  // Wake-from-sleep only: the engine was up before, so hold the request
+  // until it answers — the first message after idle takes a few seconds
+  // instead of 503ing and forcing a resend. First boot keeps the instant
+  // 503 (the setup screen is polling /setup/status anyway).
+  const woken = engineSleeping;
+  if (engineSleeping) {
+    console.log("[opencode-chat] waking engine for incoming request\u2026");
+    engineSleeping = false;
+    bootOpencode();
+  }
+  if (setup.phase !== "ready") {
+    if (woken) {
+      const woke = await waitForEngineReady(75000, req, res);
+      if (!woke || setup.phase !== "ready") {
+        if (!res.headersSent && !req.destroyed) return json(res, 503, { error: "opencode is still starting", setup });
+        return;
+      }
+    } else {
+      return json(res, 503, { error: "opencode is still starting", setup });
+    }
+  }
   const target = req.url.replace(/^\/api/, "") || "/";
   const url = new URL(target, `http://${OPENCODE_HOST}:${opencodePort}`);
   const headers = { ...req.headers };
@@ -947,7 +998,7 @@ function handle(req, res) {
   if (req.url.startsWith("/files/")) return serveFile(req, res);
   if (req.url === "/setup/alive") return trackAlive(req, res);
   if (req.url === "/healthz") return json(res, 200, { ok: true, app: "opencode-chat" });
-  if (req.url === "/setup/status") return json(res, 200, { ...setup, workspace: WORKSPACE_DIR, filesDir: FILES_DIR });
+  if (req.url === "/setup/status") return json(res, 200, { ...setup, workspace: WORKSPACE_DIR, filesDir: FILES_DIR, engine: engineSleeping ? "sleeping" : setup.phase === "ready" ? "up" : "starting", idleMins: IDLE_MINS });
   if (req.url === "/setup/retry" && req.method === "POST") {
     if (setup.phase === "error") bootOpencode();
     return json(res, 200, { ok: true });
@@ -1055,7 +1106,7 @@ let healthMisses = 0;
 // the UI offers a retry; transient blips (account reconnects) ride through.
 function watchEngineHealth() {
   setInterval(async () => {
-    if (shuttingDown || setup.phase !== "ready") {
+    if (shuttingDown || setup.phase !== "ready" || engineSleeping) {
       healthMisses = 0;
       return;
     }
@@ -1076,15 +1127,60 @@ function watchEngineHealth() {
   }, 15000).unref();
 }
 
+/* ---------------- engine idle shutdown + lazy warmup ---------------- */
+
+// Doc toolchain (uv + Python libs) spikes ~200 MB at boot; defer it until
+// the first real chat request lands, when the user is already busy reading.
+function scheduleWarmup() {
+  if (NO_WARMUP || warmupScheduled) return;
+  warmupScheduled = true;
+  ensureUv()
+    .then((uv) => uv && warmUpDocumentTools(uv))
+    .catch((err) => console.error("[opencode-chat] could not set up uv:", err.message));
+}
+
+// Holds an /api request while the engine boots (first run or wake-from-sleep)
+// so the first message after idle takes a few seconds instead of 503ing and
+// forcing the user to resend. False on client hangup, engine error, timeout.
+function waitForEngineReady(timeoutMs, req, res) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const timer = setInterval(() => {
+      if (req.destroyed || res.writableEnded) { clearInterval(timer); resolve(false); return; }
+      if (engineSleeping) return; // wake claimed elsewhere; keep waiting
+      if (setup.phase === "ready") { clearInterval(timer); resolve(true); return; }
+      if (setup.phase === "error" || Date.now() > deadline) { clearInterval(timer); resolve(false); return; }
+    }, 400);
+    if (timer.unref) timer.unref();
+  });
+}
+
+// The engine holds ~500 MB even when nobody chats. Stop our own child after
+// IDLE_MINS without /api traffic; phase stays "ready" so the UI keeps the
+// chat mounted, and the next request transparently wakes it (see proxyApi).
+// A hijacked engine (started elsewhere, child == null) is never touched.
+function watchIdleShutdown() {
+  if (IDLE_MINS <= 0) return;
+  setInterval(() => {
+    if (shuttingDown || engineSleeping || setup.phase !== "ready" || !child) return;
+    if (Date.now() - lastApiAt <= IDLE_MINS * 60_000) return;
+    engineSleeping = true; // set before kill: the exit handler must see it
+    try { child.kill(); } catch { /* already gone */ }
+    child = null;
+    healthMisses = 0;
+    console.log(`[opencode-chat] engine idle for ${IDLE_MINS}m \u2014 stopped to save RAM (wakes on next request)`);
+  }, 30_000).unref();
+}
+
 function bootOpencode() {
   setup.error = null;
   healthMisses = 0;
   ensureOpencode()
     .then(() => {
+      lastApiAt = Date.now();
       setPhase("ready", "Ready", 1);
-      ensureUv()
-        .then((uv) => uv && warmUpDocumentTools(uv))
-        .catch((err) => console.error("[opencode-chat] could not set up uv:", err.message));
+      // Doc toolchain warms lazily on first chat traffic (see scheduleWarmup),
+      // not at boot, so quiet starts skip the ~200 MB uv spike entirely.
     })
     .catch((err) => {
       console.error("[opencode-chat] setup failed:", err.message);
@@ -1136,8 +1232,10 @@ async function start() {
     if (IS_EXE && !SIDECAR) quitWhenWindowsClosed();
     else if (SHOULD_OPEN) openDefaultBrowser(url);
   });
+  console.log(`[opencode-chat] engine idle shutdown: ${IDLE_MINS > 0 ? `after ${IDLE_MINS} idle min` : "disabled"}; doc warmup: ${NO_WARMUP ? "off" : "lazy (first request)"}`);
   bootOpencode();
   watchEngineHealth();
+  watchIdleShutdown();
 }
 
 function shutdown() {
