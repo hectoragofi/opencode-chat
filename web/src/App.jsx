@@ -165,11 +165,16 @@ function ExportButton() {
       const parts = [...nodes].map((n, i) => `### Message ${i + 1}\n\n${n.innerText || ""}`);
       const md = `# OpenCode Chat export\n\n${parts.join("\n\n---\n\n")}\n`;
       const blob = new Blob([md], { type: "text/markdown" });
+      const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
+      a.href = objectUrl;
       a.download = `opencode-chat-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.md`;
+      // The anchor must be in the DOM for the click to trigger a download
+      // in Firefox (and the desktop WebView); revoke the blob URL after.
+      document.body.appendChild(a);
       a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
     } catch {
       /* ignore */
     }

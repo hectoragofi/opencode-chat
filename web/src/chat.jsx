@@ -622,15 +622,61 @@ const FILE_KINDS = {
 
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
 
+// The desktop shell is a WebView: it ignores the `download` attribute, so a
+// plain download link is a dead click there. Route it to the system browser
+// instead — the shell diverts target=_blank navigation to the OS browser,
+// which hits the same local server (?download=1 answers
+// Content-Disposition: attachment) and shows a real save dialog while the
+// chat window stays put. Regular browsers download via fetch+blob so the
+// chat never navigates away and the filename survives odd characters.
+function isDesktopShell() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+async function downloadGeneratedFile(path, name) {
+  const url = `${path}${path.includes("?") ? "&" : "?"}download=1`;
+  if (isDesktopShell()) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  try {
+    const res = await fetch(path, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = name || "file";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+  } catch {
+    // Fetch blocked or server hiccup — fall back to a new tab where the
+    // user can still preview / save the file.
+    window.open(path, "_blank", "noopener");
+  }
+}
+
 function CardActions({ path, name }) {
+  const [busy, setBusy] = useState(false);
+  const onDownload = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await downloadGeneratedFile(path, name);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <span className="flex shrink-0 items-center gap-1">
       <a href={path} target="_blank" rel="noreferrer" className={cn(ghostButton, "size-8")} title="Open">
         <ExternalLinkIcon className="size-4" />
       </a>
-      <a href={`${path}${path.includes("?") ? "&" : "?"}download=1`} download={name} className={cn(ghostButton, "size-8")} title="Download">
+      <button type="button" onClick={onDownload} disabled={busy} className={cn(ghostButton, "size-8", busy && "opacity-50")} title="Download">
         <DownloadIcon className="size-4" />
-      </a>
+      </button>
     </span>
   );
 }
