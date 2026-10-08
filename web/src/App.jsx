@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { AssistantRuntimeProvider, useAuiState } from "@assistant-ui/react";
 import { useOpenCodeRuntime, useOpenCodeSession, useOpenCodeThreadState } from "@assistant-ui/react-opencode";
 import {
   BotIcon,
   CheckIcon,
   CopyIcon,
   DownloadIcon,
+  FolderIcon,
   MessageCircleIcon,
   PanelLeftIcon,
   ShareIcon,
@@ -13,7 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { field } from "./components/surfaces";
-import { ChatSidebar, ChatThread, ModelMenu } from "./chat.jsx";
+import { ChatSidebar, ChatThread, ModelMenu, indexThreadItems } from "./chat.jsx";
 import { chatAttachmentAdapter } from "./attachments.jsx";
 import { DEFAULT_MODEL, FREE_MODELS, fetchAllModels, load, save } from "./models.js";
 import { SettingsIcon } from "lucide-react";
@@ -21,6 +22,19 @@ import { AccountButton, AccountsDialog } from "./accounts.jsx";
 import { Onboarding, useSetupStatus } from "./onboarding.jsx";
 import { SettingsDialog } from "./settings.jsx";
 import { UpdateBanner, VersionFooter } from "./updater.jsx";
+import {
+  fetchProjects,
+  fetchSessionMap,
+  loadActiveProject,
+  projectAgentId,
+  saveActiveProject,
+  tagSession,
+} from "./projects.js";
+import {
+  ProjectDialog,
+  ProjectSettingsDialog,
+} from "./components/projects.jsx";
+import { SkillsDialog } from "./components/skills-dialog.jsx";
 
 const isFree = (m) =>
   FREE_MODELS.some((f) => f.providerID === m.providerID && f.modelID === m.modelID);
@@ -171,6 +185,61 @@ function ExportButton() {
   );
 }
 
+// Tags sessions to projects — but ONLY on explicit creation intent. Every
+// new thread announces its target up front (window.__ocPendingProject, set
+// by the sidebar's New buttons); when that session arrives it gets filed.
+// Navigating to an existing chat never moves it. Ever.
+function SessionTagger({ onTagged }) {
+  let session = null;
+  try {
+    session = useOpenCodeSession();
+  } catch {
+    session = null;
+  }
+  let threadsState = null;
+  try {
+    threadsState = useAuiState((s) => s.optional.threads);
+  } catch {
+    threadsState = null;
+  }
+  const seenRef = useRef(new Set());
+  // Remember every thread id ever listed, so arrivals can be told apart
+  // from plain navigation.
+  const ids = threadsState?.threadIds;
+  const index = indexThreadItems(threadsState?.threadItems);
+  useEffect(() => {
+    if (ids) {
+      for (const id of ids) {
+        seenRef.current.add(id);
+        const r = index[id]?.remoteId;
+        if (r) seenRef.current.add(r);
+      }
+    }
+  });
+  const sid = session?.id || null;
+  useEffect(() => {
+    if (!sid) return;
+    if (seenRef.current.has(sid)) {
+      window.__ocPendingProject = undefined; // navigated, intent abandoned
+      return;
+    }
+    seenRef.current.add(sid);
+    const pending = window.__ocPendingProject;
+    window.__ocPendingProject = undefined;
+    if (!pending) return; // no creation intent — never steal
+    (async () => {
+      try {
+        await tagSession(sid, pending);
+        onTagged?.(sid, pending);
+      } catch {
+        /* best-effort */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid]);
+  return null;
+}
+
 // Shows onboarding on first run, and a short splash while the AI engine boots
 // on later runs; the chat (and its opencode runtime) mounts once it is ready.
 export function App() {
@@ -205,6 +274,60 @@ function ChatApp() {
   const [sideOpen, setSideOpen] = useState(true);
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Projects (Claude-style) + Skills dialog state.
+  const [projects, setProjects] = useState([]);
+  const [activeProjectId, setActiveProjectId] = useState(() => loadActiveProject());
+  const [sessionMap, setSessionMap] = useState({});
+  const [projectDialog, setProjectDialog] = useState(null); // null | { initial?: project }
+  const [projectSettings, setProjectSettings] = useState(null); // project object
+  const [skillsOpen, setSkillsOpen] = useState(false);
+
+  const activeProject = projects.find((p) => p.id === activeProjectId) || null;
+  const effectiveAgent = activeProject ? projectAgentId(activeProject.id) : agent;
+
+  const refreshProjects = async () => {
+    try {
+      const [list, map] = await Promise.all([fetchProjects(), fetchSessionMap()]);
+      setProjects(list);
+      setSessionMap(map);
+      // Active project may have been deleted elsewhere.
+      setActiveProjectId((cur) => {
+        if (cur && !list.some((p) => p.id === cur)) {
+          saveActiveProject(null);
+          return null;
+        }
+        return cur;
+      });
+    } catch {
+      /* projects are optional — chat still works */
+    }
+  };
+  useEffect(() => {
+    refreshProjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const selectProject = (id) => {
+    saveActiveProject(id);
+    setActiveProjectId(id);
+  };
+
+  // Drag-and-drop filing: update instantly, persist in the background.
+  const moveSession = async (sid, pid) => {
+    if (!sid) return;
+    setSessionMap((m) => {
+      const next = { ...(m || {}) };
+      if (pid) next[sid] = pid;
+      else delete next[sid];
+      return next;
+    });
+    try {
+      await tagSession(sid, pid);
+    } catch {
+      /* map reconciles on next refresh */
+    }
+    refreshProjects();
+  };
 
   useEffect(() => save("model", model), [model]);
   useEffect(() => save("agent", agent), [agent]);
@@ -240,21 +363,45 @@ function ChatApp() {
     () => ({
       baseUrl: window.location.origin + "/api",
       defaultModel: model,
-      defaultAgent: agent,
+      // Inside a project, chats run on the generated `project-<id>` agent
+      // (base chat behaviour + project instructions + knowledge files).
+      defaultAgent: effectiveAgent,
       adapters: { attachments: chatAttachmentAdapter },
       onError: (e) => setError(String(e?.message || e)),
     }),
-    [model, agent],
+    [model, effectiveAgent],
   );
   const runtime = useOpenCodeRuntime(options);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <SessionTagger
+        onTagged={(sid, pid) => {
+          // Filed on arrival — reflect instantly, then reconcile.
+          setSessionMap((m) => ({ ...(m || {}), [sid]: pid }));
+          refreshProjects();
+        }}
+      />
       <div className="bg-background text-foreground flex h-screen overflow-hidden">
         {!sideOpen ? null : (
           <aside className="bg-sidebar text-sidebar-foreground flex h-full min-h-0 w-[260px] min-w-[260px] shrink-0 flex-col overflow-hidden border-r border-sidebar-border max-md:fixed max-md:z-50 max-md:h-screen">
-            <ChatSidebar onNavigate={() => { if (typeof window !== "undefined" && window.matchMedia?.("(max-width: 768px)").matches) setSideOpen(false); }} />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex min-h-0 flex-1 flex-col">
+                <ChatSidebar
+                  projects={projects}
+                  onSelectProject={selectProject}
+                  onNewProject={() => setProjectDialog({})}
+                  onEditProject={(p) => setProjectSettings(p)}
+                  onOpenSkills={() => setSkillsOpen(true)}
+                  onMoveSession={moveSession}
+                  sessionMap={sessionMap}
+                  activeProjectId={activeProjectId}
+                  onNavigate={() => { if (typeof window !== "undefined" && window.matchMedia?.("(max-width: 768px)").matches) setSideOpen(false); }}
+                />
+              </div>
+            </div>
             <div className="flex shrink-0 flex-col gap-2 border-t border-sidebar-border p-3">
+              {!activeProject ? (
               <div
                 className={cn(field, "flex overflow-hidden rounded-xl")}
                 title="Chat = assistant that can create files (PDF, Word, Excel…). Agent = full build agent."
@@ -284,6 +431,22 @@ function ChatApp() {
                   Agent
                 </button>
               </div>
+              ) : (
+              <div
+                className={cn(field, "flex items-center gap-2 overflow-hidden rounded-xl px-3 py-1.5")}
+                title={`Chatting inside project "${activeProject.name}" — new chats use its instructions and knowledge files.`}
+              >
+                <FolderIcon className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{activeProject.name}</span>
+                <button
+                  onClick={() => selectProject(null)}
+                  className="shrink-0 rounded-full p-0.5 text-foreground/45 transition hover:text-foreground"
+                  title="Leave project (back to all chats)"
+                >
+                  <XIcon className="size-3.5" />
+                </button>
+              </div>
+              )}
               <div className="flex items-center gap-1">
                 <div className="min-w-0 flex-1 [&>button]:w-full">
                   <AccountButton
@@ -308,6 +471,48 @@ function ChatApp() {
         )}
         {!settingsOpen ? null : (
           <SettingsDialog onClose={() => setSettingsOpen(false)} onChanged={refreshModels} />
+        )}
+        {!skillsOpen ? null : <SkillsDialog onClose={() => setSkillsOpen(false)} />}
+        {!projectDialog ? null : (
+          <ProjectDialog
+            initial={projectDialog.initial}
+            onClose={() => setProjectDialog(null)}
+            onSaved={(saved) => {
+              setProjectDialog(null);
+              if (saved?.id) {
+                // Show instantly from the server response — no waiting on refetch.
+                setProjects((prev) => {
+                  const i = prev.findIndex((p) => p.id === saved.id);
+                  return i >= 0 ? prev.map((p) => (p.id === saved.id ? saved : p)) : [...prev, saved];
+                });
+                // New projects open immediately, like Claude.
+                if (!projectDialog.initial) selectProject(saved.id);
+              }
+              refreshProjects(); // reconcile in the background
+            }}
+          />
+        )}
+        {!projectSettings ? null : (
+          <ProjectSettingsDialog
+            project={projects.find((p) => p.id === projectSettings.id) || projectSettings}
+            onClose={() => setProjectSettings(null)}
+            onChanged={(saved) => {
+              // Rename/description apply instantly; reconcile in background.
+              setProjects((prev) => prev.map((p) => (p.id === saved.id ? saved : p)));
+              setProjectSettings(saved);
+              refreshProjects();
+            }}
+            onDeleted={(id) => {
+              setProjectSettings(null);
+              setProjects((prev) => prev.filter((p) => p.id !== id));
+              if (activeProjectId === id) selectProject(null);
+              refreshProjects();
+            }}
+            onOpenChat={(p) => {
+              setProjectSettings(null);
+              selectProject(p.id);
+            }}
+          />
         )}
         <main className="bg-background flex min-h-0 min-w-0 flex-1 flex-col">
           <UpdateBanner />

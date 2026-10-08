@@ -5,8 +5,6 @@ import {
   AuiIf,
   ComposerPrimitive,
   MessagePrimitive,
-  ThreadListItemPrimitive,
-  ThreadListPrimitive,
   ThreadPrimitive,
   useAui,
   useAuiState,
@@ -33,9 +31,12 @@ import {
   FileIcon,
   FileSpreadsheetIcon,
   FileTextIcon,
+  FolderIcon,
   HelpCircleIcon,
   ImageIcon,
+  LayersIcon,
   PresentationIcon,
+  Loader2Icon,
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
@@ -65,42 +66,347 @@ import {
 } from "./components/empty-state";
 import { loadRecentModels, saveRecentModel } from "./models.js";
 
-/* ---------------- thread list (sidebar) ---------------- */
+/* ---------------- thread list (sidebar, Codex-style) ---------------- */
 
-export function ChatSidebar({ onNavigate } = {}) {
+// The runtime exposes thread items as an ARRAY of { id, remoteId, title,
+// ... } (not a keyed record, despite what the .d.ts suggests). Index it by
+// both ids so rows resolve titles and session ids reliably.
+export function indexThreadItems(threadItems) {
+  if (!threadItems || typeof threadItems !== "object") return {};
+  if (!Array.isArray(threadItems)) return threadItems; // newer versions: already a record
+  const out = {};
+  for (const it of threadItems) {
+    if (!it || typeof it !== "object") continue;
+    if (it.id) out[it.id] = it;
+    if (it.remoteId) out[it.remoteId] = it;
+  }
+  return out;
+}
+
+// One chat row. Everything flows through the runtime thread state — titles
+// update live and rename / delete / switch need no remount tricks.
+function ChatRow({
+  title,
+  isActive,
+  renaming,
+  draft,
+  setDraft,
+  saving,
+  error,
+  onStartRename,
+  onSaveRename,
+  onCancelRename,
+  onSwitch,
+  onDelete,
+  draggable,
+  onDragStart,
+  onDragEnd,
+}) {
+  if (renaming) {
+    return (
+      <div className="group flex items-center gap-1 rounded-lg bg-foreground/[0.07]">
+        <span className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1">
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onSaveRename();
+              if (e.key === "Escape") onCancelRename();
+            }}
+            placeholder="Name this chat…"
+            maxLength={120}
+            className="min-w-0 flex-1 rounded-lg bg-foreground/[0.06] px-2 py-1 text-[13px] outline-none ring-1 ring-foreground/20"
+          />
+          <button
+            onClick={onSaveRename}
+            disabled={saving || !draft.trim()}
+            className="shrink-0 rounded-full p-1 text-emerald-500 transition hover:bg-foreground/[0.06] disabled:opacity-40"
+            title="Save name (Enter)"
+          >
+            {saving ? <Loader2Icon className="size-3.5 animate-spin" /> : <CheckIcon className="size-3.5" />}
+          </button>
+          <button
+            onClick={onCancelRename}
+            className="shrink-0 rounded-full p-1 text-foreground/45 transition hover:bg-foreground/[0.06] hover:text-foreground"
+            title="Cancel (Esc)"
+          >
+            <XCircleIcon className="size-3.5" />
+          </button>
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      title={error || undefined}
+      className={cn(
+        "group flex items-center gap-1 rounded-lg transition-colors hover:bg-foreground/[0.05]",
+        isActive && "bg-foreground/[0.07]",
+        error && "ring-1 ring-red-500/40",
+      )}
+    >
+      <button
+        onClick={onSwitch}
+        className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm outline-none"
+        title={title}
+      >
+        {title || "New chat"}
+      </button>
+      {error ? (
+        <span className="shrink-0 pr-1 text-xs font-bold text-red-400" title={error}>!</span>
+      ) : null}
+      <button
+        data-no-drag
+        onClick={onStartRename}
+        className="hidden shrink-0 rounded-full p-1.5 text-foreground/45 transition group-hover:block hover:bg-foreground/[0.06] hover:text-foreground"
+        title="Rename chat — or drag it into a folder"
+      >
+        <PencilIcon className="size-3.5" />
+      </button>
+      <button
+        data-no-drag
+        onClick={onDelete}
+        className="hidden shrink-0 rounded-full p-1.5 text-foreground/45 transition group-hover:block hover:bg-foreground/[0.06] hover:text-red-400"
+        title="Delete"
+      >
+        <Trash2Icon className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+export function ChatSidebar({
+  onNavigate,
+  sessionMap,
+  projects,
+  activeProjectId,
+  onSelectProject,
+  onNewProject,
+  onEditProject,
+  onOpenSkills,
+  onMoveSession,
+} = {}) {
   const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState({}); // projectId -> true
+  const [renamingId, setRenamingId] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [rowError, setRowError] = useState(null); // { threadId, message }
+  const [dragId, setDragId] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null); // projectId | "__general" | null
+
+  const aui = useAui();
+  let threadsState = null;
+  try {
+    threadsState = useAuiState((s) => s.optional.threads);
+  } catch {
+    threadsState = null;
+  }
+  const threadIds = threadsState?.threadIds || [];
+  const threadIndex = useMemo(
+    () => indexThreadItems(threadsState?.threadItems),
+    [threadsState],
+  );
+  const mainThreadId = threadsState?.mainThreadId;
+  const isLoading = !!threadsState?.isLoading;
+  const loadError = threadsState?.loadError;
+  const q = query.trim().toLowerCase();
+
+  const projectById = useMemo(
+    () => Object.fromEntries((projects || []).map((p) => [p.id, p])),
+    [projects],
+  );
+
+  // Partition threads into folders, preserving runtime order. Chats in
+  // unknown or deleted projects fall back to general.
+  const groups = useMemo(() => {
+    const out = { __general: [] };
+    for (const tid of threadIds) {
+      const item = threadIndex[tid] || {};
+      const sid = item.remoteId || tid;
+      const pid = sessionMap?.[sid];
+      const key = pid && projectById[pid] ? pid : "__general";
+      const title = item.title || "New chat";
+      if (q && !title.toLowerCase().includes(q)) continue;
+      (out[key] || (out[key] = [])).push({
+        threadId: tid,
+        sessionId: sid,
+        title,
+        hasRemote: !!item.remoteId,
+      });
+    }
+    return out;
+  }, [threadIds, threadIndex, sessionMap, projectById, q]);
+
+  const mainItem = mainThreadId ? threadIndex[mainThreadId] : null;
+  const openSid = mainItem?.remoteId || mainThreadId || null;
+  const openProjectId = openSid ? sessionMap?.[openSid] : null;
+  const totalVisible = Object.values(groups).reduce((a, l) => a + l.length, 0);
+
+  // Every new thread announces its intent up front (window.__ocPendingProject);
+  // SessionTagger files it into that project on arrival — and only then.
+  // Clicking an existing chat never moves it.
+  const startNewChat = (projectId) => {
+    const target = projectId !== undefined ? projectId : activeProjectId;
+    window.__ocPendingProject = target || null;
+    try {
+      aui.threads.switchToNewThread()?.catch?.(() => {});
+    } catch {
+      /* engine down — the main view surfaces the error */
+    }
+  };
+
   // Ctrl+Shift+O starts a new chat from anywhere.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
-        document.querySelector("[data-sidebar-new]")?.click();
+        startNewChat();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  const q = query.trim().toLowerCase();
-  // ThreadListPrimitive owns the rows; filter them in the DOM so search
-  // works without depending on runtime thread metadata.
-  useEffect(() => {
-    const root = document.querySelector("[data-sidebar-rows]");
-    if (!root) return;
-    const rows = root.querySelectorAll("[data-thread-row]");
-    rows.forEach((row) => {
-      const title = row.getAttribute("data-thread-title") || row.textContent || "";
-      row.style.display = !q || title.toLowerCase().includes(q) ? "" : "none";
-    });
   });
+
+  const toggleCollapse = (id) => setCollapsed((c) => ({ ...c, [id]: !c[id] }));
+  const newChatHere = (id) => {
+    onSelectProject?.(id);
+    setCollapsed((c) => ({ ...c, [id]: false }));
+    startNewChat(id);
+  };
+
+  const switchTo = (threadId) => {
+    try {
+      aui.threads.switchToThread(threadId)?.catch?.(() => {});
+    } catch {
+      /* ignore */
+    }
+    onNavigate?.();
+  };
+
+  const startRename = (threadId, title) => {
+    setRenamingId(threadId);
+    setDraft(title === "New chat" ? "" : title);
+    setRowError(null);
+  };
+  const saveRename = async (threadId, current) => {
+    const name = draft.trim();
+    if (!name || name === current) {
+      setRenamingId(null);
+      return;
+    }
+    setSaving(true);
+    setRowError(null);
+    try {
+      await aui.threads.getItemById(threadId).rename(name);
+      setRenamingId(null);
+    } catch (e) {
+      setRowError({ threadId, message: String(e?.message || e) });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const removeChat = async (threadId) => {
+    try {
+      await aui.threads.getItemById(threadId).delete();
+    } catch (e) {
+      setRowError({ threadId, message: String(e?.message || e) });
+    }
+  };
+  const retryLoad = async () => {
+    try {
+      await aui.threads.reload();
+    } catch {
+      /* still down — error persists */
+    }
+  };
+
+  /* ----- drag chats between folders ----- */
+  const rowDragStart = (sid) => (e) => {
+    if (e.target.closest("input,textarea,[data-no-drag]")) {
+      e.preventDefault();
+      return;
+    }
+    try {
+      e.dataTransfer.setData("text/plain", sid);
+      e.dataTransfer.effectAllowed = "move";
+    } catch {
+      /* ignore */
+    }
+    setDragId(sid);
+    setDropTarget(null);
+  };
+  const endDrag = () => {
+    setDragId(null);
+    setDropTarget(null);
+  };
+  const groupDragOver = (key) => (e) => {
+    if (!dragId) return;
+    e.preventDefault();
+    try {
+      e.dataTransfer.dropEffect = "move";
+    } catch {
+      /* ignore */
+    }
+    setDropTarget((t) => (t === key ? t : key));
+  };
+  const groupDrop = (projectIdOrNull) => (e) => {
+    e.preventDefault();
+    let sid = dragId;
+    try {
+      sid = e.dataTransfer.getData("text/plain") || dragId;
+    } catch {
+      /* ignore */
+    }
+    endDrag();
+    if (sid) onMoveSession?.(sid, projectIdOrNull);
+  };
+
+  const renderRow = (c) => (
+    <ChatRow
+      key={c.threadId}
+      title={c.title}
+      isActive={c.threadId === mainThreadId}
+      renaming={renamingId === c.threadId}
+      draft={draft}
+      setDraft={setDraft}
+      saving={saving}
+      error={rowError?.threadId === c.threadId ? rowError.message : null}
+      onStartRename={() => startRename(c.threadId, c.title)}
+      onSaveRename={() => saveRename(c.threadId, c.title)}
+      onCancelRename={() => setRenamingId(null)}
+      onSwitch={() => switchTo(c.threadId)}
+      onDelete={() => removeChat(c.threadId)}
+      draggable={!!c.hasRemote}
+      onDragStart={rowDragStart(c.sessionId)}
+      onDragEnd={endDrag}
+    />
+  );
   return (
-    <ThreadListPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 flex gap-2 p-3">
-        <ThreadListPrimitive.New data-sidebar-new className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-foreground/[0.05]" title="New chat (Ctrl+Shift+O)">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-px p-3 pb-1">
+        <button
+          onClick={() => startNewChat()}
+          className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-foreground/[0.05]"
+          title="New chat (Ctrl+Shift+O)"
+        >
           <PlusIcon className="size-4" />
           New chat
-        </ThreadListPrimitive.New>
+        </button>
+        <button
+          onClick={() => onOpenSkills?.()}
+          className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-foreground/[0.05]"
+          title="Skills — reusable assistant capabilities"
+        >
+          <LayersIcon className="size-4" />
+          Skills
+        </button>
       </div>
-      <div className="shrink-0 px-3 pb-2">
+      <div className="shrink-0 px-3 pb-2 pt-1">
         <label className="flex items-center gap-2 rounded-xl bg-foreground/[0.04] px-3 py-1.5 dark:bg-foreground/[0.06]">
           <SearchIcon className="size-3.5 shrink-0 text-foreground/40" />
           <input
@@ -116,27 +422,126 @@ export function ChatSidebar({ onNavigate } = {}) {
           )}
         </label>
       </div>
-      <div className="shrink-0 px-5 pb-1.5 font-mono text-[11px] tracking-tight text-foreground/35">
-        Chats
-      </div>
-      <div className="min-h-0 flex-1 scroll-pane overflow-y-auto px-2 pb-2" data-sidebar-rows>
-        <ThreadListPrimitive.Items className="flex flex-col gap-px" data-thread-rows>
-          {() => (
-            <ThreadListItemPrimitive.Root data-thread-row className="group flex items-center gap-1 rounded-lg transition-colors hover:bg-foreground/[0.05] data-active:bg-foreground/[0.07]" data-thread-title="">
-              <ThreadListItemPrimitive.Trigger className="min-w-0 flex-1 truncate px-3 py-2 text-left text-sm outline-none" onClick={() => onNavigate?.()}>
-                <ThreadListItemPrimitive.Title fallback="New chat" />
-              </ThreadListItemPrimitive.Trigger>
-              <ThreadListItemPrimitive.Delete
-                className="hidden shrink-0 rounded-full p-1.5 text-foreground/45 transition group-hover:block hover:bg-foreground/[0.06] hover:text-red-400"
-                title="Delete"
-              >
-                <Trash2Icon className="size-3.5" />
-              </ThreadListItemPrimitive.Delete>
-            </ThreadListItemPrimitive.Root>
+      <div className="min-h-0 flex-1 scroll-pane overflow-y-auto px-2 pb-2">
+        <div className="flex items-center px-3 pb-1 pt-1">
+          <span className="font-mono text-[11px] tracking-tight text-foreground/35">Projects</span>
+          <span className="flex-1" />
+          <button
+            onClick={() => onNewProject?.()}
+            className="rounded-full p-1 text-foreground/45 transition hover:bg-foreground/[0.06] hover:text-foreground"
+            title="New project"
+          >
+            <PlusIcon className="size-3.5" />
+          </button>
+        </div>
+        <div className="flex flex-col gap-px">
+          {(projects || []).map((p) => {
+            const active = p.id === activeProjectId;
+            const shut = !!collapsed[p.id] && !q && openProjectId !== p.id;
+            const chats = groups[p.id] || [];
+            const dropping = dragId && dropTarget === p.id;
+            if (q && !chats.length) return null;
+            return (
+              <div key={p.id}>
+                <div
+                  onDragOver={groupDragOver(p.id)}
+                  onDrop={groupDrop(p.id)}
+                  className={cn(
+                    "group flex items-center gap-0.5 rounded-lg transition-colors hover:bg-foreground/[0.05]",
+                    active && "bg-foreground/[0.07]",
+                    dropping && "bg-foreground/[0.08] ring-1 ring-foreground/25",
+                  )}
+                >
+                  <button
+                    onClick={() => toggleCollapse(p.id)}
+                    className="shrink-0 rounded-md p-1.5 text-foreground/40 transition hover:text-foreground"
+                    title={shut ? "Expand" : "Collapse"}
+                  >
+                    <ChevronDownIcon className={cn("size-3.5 transition-transform", shut && "-rotate-90")} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      onSelectProject?.(active ? null : p.id);
+                      if (!active) setCollapsed((c) => ({ ...c, [p.id]: false }));
+                    }}
+                    className="flex min-w-0 flex-1 items-center gap-2 truncate px-1 py-2 text-left text-sm outline-none"
+                    title={p.description ? `${p.name}\n${p.description}` : `${p.name} — drag chats here to file them`}
+                  >
+                    <FolderIcon className={cn("size-3.5 shrink-0", active ? "text-foreground" : "text-foreground/45")} />
+                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                  </button>
+                  <button
+                    onClick={() => newChatHere(p.id)}
+                    className="hidden shrink-0 rounded-full p-1.5 text-foreground/45 transition group-hover:block hover:bg-foreground/[0.06] hover:text-foreground"
+                    title={`New chat in ${p.name}`}
+                  >
+                    <PlusIcon className="size-3.5" />
+                  </button>
+                  <button
+                    onClick={() => onEditProject?.(p)}
+                    className="hidden shrink-0 rounded-full p-1.5 text-foreground/45 transition group-hover:block hover:bg-foreground/[0.06] hover:text-foreground"
+                    title="Project settings"
+                  >
+                    <PencilIcon className="size-3.5" />
+                  </button>
+                </div>
+                <div className={cn("flex flex-col gap-px pl-[26px]", shut && "hidden")}>
+                  {chats.map(renderRow)}
+                  {!q && !chats.length ? (
+                    <p className="px-3 py-1.5 text-[13px] text-foreground/35">
+                      {dragId ? "Drop chats here" : "No chats yet"}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+          {!(projects || []).length ? (
+            <button
+              onClick={() => onNewProject?.()}
+              className="mx-1 rounded-lg px-3 py-2 text-left text-[13px] text-foreground/45 transition hover:bg-foreground/[0.05] hover:text-foreground"
+            >
+              New project
+            </button>
+          ) : null}
+        </div>
+        <div
+          onDragOver={groupDragOver("__general")}
+          onDrop={groupDrop(null)}
+          className={cn(
+            "rounded-xl",
+            dragId && "mt-1 min-h-16 border border-dashed border-foreground/25",
+            dragId && dropTarget === "__general" && "bg-foreground/[0.06]",
           )}
-        </ThreadListPrimitive.Items>
+        >
+          <div className="px-3 pb-1 pt-3 font-mono text-[11px] tracking-tight text-foreground/35">
+            {dragId ? "Chats — drop here to remove from project" : "Chats"}
+          </div>
+          <div className="flex flex-col gap-px">
+            {(groups.__general || []).map(renderRow)}
+          </div>
+        </div>
+        {isLoading && !threadIds.length ? (
+          <p className="px-5 py-4 text-[13px] text-foreground/40">Loading chats…</p>
+        ) : null}
+        {!isLoading && loadError && !threadIds.length ? (
+          <div className="flex flex-col items-start gap-2 px-5 py-4">
+            <p className="text-[13px] text-red-400">Couldn&apos;t load chats — is the AI engine running?</p>
+            <button
+              onClick={retryLoad}
+              className="rounded-full border border-border/60 px-3 py-1 text-xs transition hover:bg-foreground/[0.05]"
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {!isLoading && q && !totalVisible ? (
+          <p className="px-3 py-4 text-center text-[13px] text-foreground/40">
+            No chats match “{query.trim()}”.
+          </p>
+        ) : null}
       </div>
-    </ThreadListPrimitive.Root>
+    </div>
   );
 }
 
@@ -645,6 +1050,38 @@ function useActivity() {
   return raw || "thinking|thinking";
 }
 
+// Live reasoning text of the current assistant turn, as one string.
+// Same primitive-return rule as useToolTrace (see #185): a string that
+// changes identity per chunk is fine — it settles when streaming stops.
+// Capped so over-long thoughts can't blow up snapshot comparisons.
+const MAX_THOUGHT_CHARS = 6000;
+function useReasoningText() {
+  try {
+    return useOpenCodeThreadState((s) => {
+      try {
+        const ids = s.messageOrder || [];
+        for (let i = ids.length - 1; i >= 0; i--) {
+          const m = s.messagesById?.[ids[i]];
+          if (!m || m.info?.role !== "assistant") continue;
+          const texts = (m.parts || [])
+            .filter((p) => p.type === "reasoning" && typeof p.text === "string" && p.text.trim())
+            .map((p) => p.text.trim());
+          if (!texts.length) return "";
+          const joined = texts.join("\n\n");
+          return joined.length > MAX_THOUGHT_CHARS
+            ? "…" + joined.slice(-MAX_THOUGHT_CHARS)
+            : joined;
+        }
+        return "";
+      } catch {
+        return "";
+      }
+    });
+  } catch {
+    return ""; // thread not backed by a session yet
+  }
+}
+
 function toolElapsed(p) {
   const t = p.state?.time;
   if (!t?.start) return "";
@@ -704,7 +1141,24 @@ function useToolTrace() {
 function RunStatus() {
   const activity = useActivity();
   const trace = useToolTrace();
+  const reasoning = useReasoningText();
   const [open, setOpen] = useState(false);
+  const [thoughtOpen, setThoughtOpen] = useState(false);
+  const thoughtRef = useRef(null);
+  const hadThought = useRef(false);
+  // Open automatically the first time thoughts stream in; if the user
+  // closes it, it stays closed for the rest of the run.
+  useEffect(() => {
+    if (reasoning && !hadThought.current) {
+      hadThought.current = true;
+      setThoughtOpen(true);
+    }
+  }, [reasoning]);
+  // Stick to the bottom while new thought streams in.
+  useEffect(() => {
+    const el = thoughtRef.current;
+    if (el && thoughtOpen) el.scrollTop = el.scrollHeight;
+  }, [reasoning, thoughtOpen]);
   const sep = (activity || "thinking|thinking").indexOf("|");
   const kind = sep < 0 ? "thinking" : activity.slice(0, sep);
   const label = sep < 0 ? activity : activity.slice(sep + 1);
@@ -735,6 +1189,18 @@ function RunStatus() {
         <span className="font-mono text-[11px] tracking-tight text-foreground/35 tabular-nums">
           {secs}s
         </span>
+        {!reasoning ? null : (
+          <button
+            type="button"
+            onClick={() => setThoughtOpen((o) => !o)}
+            className="ml-1 flex items-center gap-0.5 rounded-full px-2 py-0.5 font-mono text-[11px] text-foreground/45 transition hover:bg-foreground/[0.06] hover:text-foreground"
+            title={thoughtOpen ? "Hide thoughts" : "Show what it's thinking"}
+          >
+            <BrainIcon className="size-3" />
+            Thoughts
+            <ChevronDownIcon className={cn("size-3 transition-transform", thoughtOpen && "rotate-180")} />
+          </button>
+        )}
         {!done.length ? null : (
           <button
             type="button"
@@ -747,6 +1213,14 @@ function RunStatus() {
           </button>
         )}
       </div>
+      {!thoughtOpen || !reasoning ? null : (
+        <div
+          ref={thoughtRef}
+          className="scroll-pane max-h-64 overflow-y-auto rounded-xl border border-border/60 bg-foreground/[0.02] px-3 py-2"
+        >
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/70">{reasoning}</p>
+        </div>
+      )}
       {!open || !done.length ? null : (
         <div className="flex flex-col gap-0.5 rounded-xl border border-border/60 bg-foreground/[0.02] p-1.5">
           {done.slice(-8).map((t) => (
@@ -1065,10 +1539,67 @@ function AttachChip({ attachment }) {
 
 function SendButton() {
   const aui = useAui();
-  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const coreRunning = useAuiState((s) => s.thread.isRunning);
+  // The core flag can lag the engine (busy/retry phases between steps, long
+  // tool calls) — union it with the opencode session state so the button is
+  // in stop mode for the whole run, not just while tokens stream.
+  let ocBusy = null;
+  try {
+    ocBusy = useOpenCodeThreadState((s) => {
+      const rs = s.runState?.type;
+      const ss = s.sessionStatus?.type;
+      return (
+        rs === "streaming" ||
+        rs === "cancelling" ||
+        rs === "reverting" ||
+        ss === "busy" ||
+        ss === "retry"
+      );
+    });
+  } catch {
+    ocBusy = null; // thread not backed by a session yet
+  }
+  const isRunning = ocBusy ?? coreRunning;
   const canSend = useAuiState((s) => s.composer.canSend);
+  // Sticky stopping: one abort doesn't always take (mid-tool execution,
+  // state transitions). Keep the stop/Square state and re-fire abort every
+  // 2.5s until the run actually dies (max 3 retries), then release.
+  const [stopping, setStopping] = useState(false);
+  const attempts = useRef(0);
+  useEffect(() => {
+    if (!isRunning) {
+      setStopping(false);
+      attempts.current = 0;
+      return;
+    }
+    if (!stopping || attempts.current >= 3) return;
+    const t = setTimeout(() => {
+      attempts.current += 1;
+      try {
+        aui.thread.cancelRun();
+      } catch {
+        /* run failed locally — nothing more to abort */
+      }
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [isRunning, stopping, aui]);
   if (isRunning) {
-    return <ComposerSend streaming idle={false} onClick={() => aui.thread.cancelRun()} />;
+    return (
+      <ComposerSend
+        streaming
+        idle={false}
+        title={stopping ? "Stopping… (click to force again)" : "Stop generating"}
+        className={stopping ? "animate-pulse" : undefined}
+        onClick={() => {
+          setStopping(true);
+          try {
+            aui.thread.cancelRun();
+          } catch {
+            /* ignore */
+          }
+        }}
+      />
+    );
   }
   return (
     <ComposerPrimitive.Send asChild>

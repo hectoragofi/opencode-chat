@@ -44,6 +44,32 @@ async function body(res) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+function request(port, method, p, data) {
+  return new Promise((resolve, reject) => {
+    const payload = data === undefined ? null : Buffer.from(JSON.stringify(data));
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: p,
+        method,
+        timeout: 8000,
+        headers: payload ? { "content-type": "application/json", "content-length": payload.length } : {},
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }),
+        );
+      },
+    );
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
 async function waitForHealth(port, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -121,5 +147,113 @@ describe("server", () => {
     const res = await get(port, "/api/__opencode_chat_smoke__");
     assert.ok([404, 503].includes(res.statusCode), `unexpected status: ${res.statusCode}`);
     assert.match(res.headers["content-type"] || "", /application\/json/);
+  });
+
+  it("supports project CRUD with instructions and knowledge files", async () => {
+    const created = await request(port, "POST", "/projects", {
+      name: "smoke test project",
+      description: "created by npm test",
+      instructions: "Always answer in haiku.",
+    });
+    assert.equal(created.status, 201);
+    const project = JSON.parse(created.text).project;
+    assert.match(project.id, /^[a-z0-9-]+$/);
+    const id = project.id;
+    try {
+      const listed = JSON.parse((await request(port, "GET", "/projects")).text);
+      assert.ok(listed.projects.some((p) => p.id === id));
+
+      const updated = await request(port, "PUT", `/projects/${id}`, { instructions: "Always be brief." });
+      assert.equal(updated.status, 200);
+      assert.equal(JSON.parse(updated.text).project.instructions, "Always be brief.");
+
+      const content = Buffer.from("smoke knowledge").toString("base64");
+      const uploaded = await request(port, "POST", `/projects/${id}/files`, {
+        filename: "notes.txt",
+        contentBase64: content,
+      });
+      assert.equal(uploaded.status, 201);
+
+      const fileRes = await get(port, `/projects/${id}/files/content/notes.txt`);
+      assert.equal(fileRes.statusCode, 200);
+      assert.equal(await body(fileRes), "smoke knowledge");
+
+      // Traversal outside the project files dir is rejected.
+      const evil = await get(port, `/projects/${id}/files/content/../project.json`);
+      assert.equal(evil.statusCode, 404);
+      await body(evil);
+
+      const untagged = await request(port, "POST", "/project-sessions", {
+        sessionId: "ses_smoke_test",
+        projectId: id,
+      });
+      assert.equal(untagged.status, 200);
+      const map = JSON.parse((await request(port, "GET", "/project-sessions")).text).map;
+      assert.equal(map.ses_smoke_test, id);
+      await request(port, "POST", "/project-sessions", { sessionId: "ses_smoke_test", projectId: null });
+    } finally {
+      const deleted = await request(port, "DELETE", `/projects/${id}`);
+      assert.equal(deleted.status, 200);
+      const gone = await request(port, "GET", `/projects/${id}`);
+      assert.equal(gone.status, 404);
+    }
+  });
+
+  it("rejects project creation without a name", async () => {
+    const res = await request(port, "POST", "/projects", { name: "  " });
+    assert.equal(res.status, 400);
+  });
+
+  it("supports project icons and files larger than the old 15 MB cap", async () => {
+    const created = await request(port, "POST", "/projects", { name: "icon smoke", icon: "🚀" });
+    assert.equal(created.status, 201);
+    const id = JSON.parse(created.text).project.id;
+    try {
+      assert.equal(JSON.parse(created.text).project.icon, "🚀");
+      const renamed = await request(port, "PUT", `/projects/${id}`, { icon: "🎓", name: "icon smoke v2" });
+      assert.equal(renamed.status, 200);
+      assert.equal(JSON.parse(renamed.text).project.icon, "🎓");
+      assert.equal(JSON.parse(renamed.text).project.name, "icon smoke v2");
+
+      // 20 MB — rejected under the old 15 MB per-file cap.
+      const big = Buffer.alloc(20 * 1024 * 1024, "a").toString("base64");
+      const uploaded = await request(port, "POST", `/projects/${id}/files`, {
+        filename: "big.bin",
+        contentBase64: big,
+      });
+      assert.equal(uploaded.status, 201);
+      const files = JSON.parse(uploaded.text).files;
+      assert.ok(files.some((f) => f.name === "big.bin" && f.size === 20 * 1024 * 1024));
+    } finally {
+      await request(port, "DELETE", `/projects/${id}`);
+    }
+  });
+
+  it("supports skill CRUD and enable/disable", async () => {
+    const listed = JSON.parse((await request(port, "GET", "/skills")).text);
+    assert.ok(Array.isArray(listed.skills));
+    assert.ok(listed.skills.some((s) => s.skill === "document-polish" && s.enabled));
+
+    const bad = await request(port, "POST", "/skills", { name: "", description: "x", body: "y" });
+    assert.equal(bad.status, 400);
+
+    const name = `smoke-skill-${Date.now().toString(36)}`;
+    try {
+      const made = await request(port, "POST", "/skills", {
+        name,
+        description: "smoke test skill",
+        body: "## Do it\n- test",
+      });
+      assert.equal(made.status, 201);
+      assert.ok(JSON.parse(made.text).skills.some((s) => s.skill === name && s.enabled));
+
+      const off = await request(port, "POST", `/skills/${name}/toggle`, { enabled: false });
+      assert.equal(off.status, 200);
+      assert.ok(JSON.parse(off.text).skills.some((s) => s.skill === name && !s.enabled));
+    } finally {
+      const gone = await request(port, "DELETE", `/skills/${name}`);
+      assert.equal(gone.status, 200);
+      assert.ok(!JSON.parse(gone.text).skills.some((s) => s.skill === name));
+    }
   });
 });

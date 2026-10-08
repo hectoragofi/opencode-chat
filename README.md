@@ -23,6 +23,7 @@ Chat with frontier models through your OpenCode Zen account, ChatGPT Plus/Pro, G
 - [Quick Start](#quick-start)
 - [Configuration Reference](#configuration-reference)
 - [Document Generation](#document-generation)
+- [Projects and Skills](#projects-and-skills)
 - [Desktop Application](#desktop-application)
 - [Building Distributables](#building-distributables)
 - [Releasing](#releasing)
@@ -57,6 +58,8 @@ The backend requires zero manual configuration: on first launch it provisions th
 | Threaded chat UI | Sidebar with persistent history, streaming responses, and session sharing via opencode share links. |
 | Rich message rendering | GFM tables, KaTeX math, fenced code blocks, and embedded generated images. |
 | Two personas | **Chat:** general-purpose assistant with document-building skills. **Agent:** full opencode build agent for engineering tasks. |
+| Projects | Claude-style groups with shared custom instructions and knowledge files; chats inside a project use a dedicated agent. |
+| Skills | Reusable `SKILL.md` capabilities (Claude/opencode format) the assistant loads on demand; managed from the ✨ button. |
 | Model picker | Browse and switch models on demand. Supports free-tier models, OpenCode Zen, and custom provider/model identifiers. |
 | Guided onboarding | First-run setup flow for connecting accounts; fully skippable for immediate use with free models. |
 
@@ -192,6 +195,46 @@ To customize assistant behavior, edit `template/chat-agent.md` and restart. The 
 
 ---
 
+## Projects and Skills
+
+Claude-style organization for chats and reusable assistant behavior.
+
+### Projects
+
+Projects group chats around shared context, like Claude Projects. Each project has a
+**name**, an optional **description**, **custom instructions** (appended to the assistant's
+system prompt for every chat in the project), and **knowledge files** (reference docs the
+assistant consults when relevant — select as many files as you like, any size, or drag
+& drop them in).
+
+- The sidebar works like the Codex app: every project is a folder with its chats nested
+  underneath it (expand/collapse with the chevron), followed by a plain **Chats** list for
+  everything else. **Drag any chat into a folder to file it there, or out to Chats to
+  remove it** — drop targets highlight while dragging. Hover a folder for new-chat-here
+  (**+**) and settings; hover any chat for **rename** (inline, Enter to save) and delete.
+  Search filters across all of it.
+- Click a folder to make it the active project — new chats started there use its
+  instructions and knowledge files. Click it again (or the **×** next to its name below
+  the chat list) to go back. Clicking a chat always just opens it; chats only ever
+  change folders when you drag them or create them somewhere.
+- Technically, each project generates a dedicated opencode agent
+  (`workspace/.opencode/agent/project-<id>.md`) from the base chat agent plus the project
+  context, so chats inside the project behave like the Chat persona with extra knowledge.
+  Project storage lives under `workspace/projects/<id>/`.
+
+### Skills
+
+Skills are reusable instruction packs in the same `SKILL.md` format Claude Code and opencode
+use, loaded on demand by the agent's native `skill` tool. Open **Skills** right under New chat
+in the sidebar to list, create, edit, enable/disable, or delete skills.
+
+- Skills live in the workspace at `.opencode/skills/<name>/SKILL.md` — copy folders back and
+  forth with Claude Code freely.
+- Disabling a skill moves it to `<name>.disabled`, hiding it from the assistant without
+  deleting it.
+- Two skills ship by default (`document-polish`, `spreadsheet-analyst`); they are seeded from
+  `template/skills/` on first run and never overwrite your edits.
+
 ## Desktop Application
 
 The Tauri shell (`desktop/`) delivers the native Windows experience:
@@ -287,7 +330,8 @@ opencode-chat/
 ├── template/              # Workspace seed files
 │   ├── chat-agent.md      # "chat" persona definition and file-creation recipe
 │   ├── opencode.json      # Default workspace configuration
-│   └── script-header.py   # Required uv header for generated Python scripts
+│   ├── script-header.py   # Required uv header for generated Python scripts
+│   └── skills/            # Bundled default skills (SKILL.md, seeded on first run)
 ├── desktop/               # Tauri shell (splash screen, Rust sidecar launcher)
 │   └── src-tauri/
 ├── test/                  # node:test suites (server, templates)

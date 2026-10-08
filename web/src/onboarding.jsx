@@ -14,23 +14,26 @@ import { cn } from "@/lib/utils";
 import { field } from "./components/surfaces";
 import { ProviderList, ZEN_KEY_URL, saveApiKey } from "./accounts.jsx";
 
-// Polls the local server's setup status (opencode download / boot).
+// Polls the local server's setup status (opencode download / boot). Keeps a
+// slow heartbeat after ready so a later engine death flips the app back to
+// the error screen (with Retry) instead of failing /api calls with 502s.
 export function useSetupStatus() {
   const [status, setStatus] = useState({ phase: "starting", progress: 0, message: "Starting…" });
   useEffect(() => {
     let alive = true;
     let timer;
     const tick = async () => {
+      let delay = 600;
       try {
         const res = await fetch("/setup/status", { cache: "no-store" });
         const s = await res.json();
         if (!alive) return;
-        setStatus(s);
-        if (s.phase === "ready") return;
+        setStatus((prev) => (prev.phase === s.phase && prev.message === s.message ? prev : s));
+        if (s.phase === "ready") delay = 5000; // slow lane once serving
       } catch {
         /* server restarting */
       }
-      timer = setTimeout(tick, 600);
+      timer = setTimeout(tick, delay);
     };
     tick();
     return () => {

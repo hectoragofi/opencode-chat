@@ -34,6 +34,18 @@ describe("template", () => {
     assert.match(header, /reportlab.*python-docx.*openpyxl.*python-pptx.*matplotlib/s);
   });
 
+  it("ships valid opencode skill templates", () => {
+    for (const name of ["document-polish", "spreadsheet-analyst"]) {
+      const raw = read(`template/skills/${name}/SKILL.md`);
+      const m = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+      assert.ok(m, `${name} must start with YAML frontmatter`);
+      const front = m[1];
+      assert.match(front, new RegExp(`^name: ${name}$`, "m"), "skill name must match its directory");
+      assert.match(front, /^description: .{1,1024}$/m, "skill needs a 1-1024 char description");
+      assert.match(m[2].trim(), /## / , "skill body must contain instructions");
+    }
+  });
+
   it("updater feed points at a release feed", () => {
     const conf = JSON.parse(fs.readFileSync(path.join(ROOT, "desktop/src-tauri/tauri.conf.json"), "utf8"));
     assert.equal(conf.plugins?.updater?.active, true);

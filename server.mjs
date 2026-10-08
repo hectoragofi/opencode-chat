@@ -85,8 +85,11 @@ const FILES_DIR = path.join(WORKSPACE_DIR, "files");
 const PROJECTS_DIR = path.join(WORKSPACE_DIR, "projects");
 const SKILLS_DIR = path.join(WORKSPACE_DIR, ".opencode", "skills");
 const SESSIONS_MAP_FILE = path.join(PROJECTS_DIR, "sessions.json");
-const MAX_PROJECT_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_SKILL_BYTES = 64 * 1024;
+// Knowledge-file uploads ride in as JSON base64 (no extra deps). The body
+// cap is generous on purpose — project files have no size limit; localhost
+// uploads of even hundreds of MB are quick.
+const MAX_UPLOAD_BODY_BYTES = 768 * 1024 * 1024;
 
 const slugify = (s, fallback = "item") => {
   const slug = String(s || "")
@@ -176,6 +179,7 @@ function readProject(id) {
   try {
     const data = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!data || data.id !== id) return null;
+    if (!data.icon) data.icon = "📁"; // projects created before icons existed
     return { ...data, files: listProjectFiles(id), fileCount: listProjectFiles(id).length };
   } catch {
     return null;
@@ -301,8 +305,40 @@ function prepareWorkspace() {
   } catch { /* ignore */ }
   fs.mkdirSync(path.join(WORKSPACE_DIR, "scratch"), { recursive: true });
   fs.mkdirSync(path.join(WORKSPACE_DIR, ".opencode", "agent"), { recursive: true });
+  fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+  fs.mkdirSync(SKILLS_DIR, { recursive: true });
+  fs.mkdirSync(path.join(WORKSPACE_DIR, ".opencode", "skills"), { recursive: true });
   const agent = readBundled("template/chat-agent.md");
   if (agent) fs.writeFileSync(path.join(WORKSPACE_DIR, ".opencode", "agent", "chat.md"), agent);
+  // Seed bundled skills (template/skills/<name>/SKILL.md) on first run;
+  // never overwrite a skill the user edited.
+  const seedSkills = (rel) => {
+    const buf = readBundled(rel);
+    if (!buf) return null;
+    return buf.toString();
+  };
+  for (const rel of ["template/skills/document-polish/SKILL.md", "template/skills/spreadsheet-analyst/SKILL.md"]) {
+    const content = seedSkills(rel);
+    if (!content) continue;
+    const m = content.match(/^---\s*\n[\s\S]*?\nname:\s*([^\s\n]+)/);
+    const skillName = m ? m[1].trim() : slugify(path.basename(path.dirname(rel)), "skill");
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(skillName)) continue;
+    if (!fs.existsSync(path.join(SKILLS_DIR, skillName, "SKILL.md")) && !fs.existsSync(path.join(SKILLS_DIR, `${skillName}.disabled`, "SKILL.md"))) {
+      fs.mkdirSync(path.join(SKILLS_DIR, skillName), { recursive: true });
+      fs.writeFileSync(path.join(SKILLS_DIR, skillName, "SKILL.md"), content);
+    }
+  }
+  // Rebuild per-project agents (base template may have changed).
+  try {
+    for (const p of listProjects()) syncProjectAgent(p);
+    // Drop stale project agents left by deleted projects.
+    const live = new Set(listProjects().map((p) => `project-${p.id}.md`));
+    for (const entry of fs.readdirSync(path.join(WORKSPACE_DIR, ".opencode", "agent"))) {
+      if (entry.startsWith("project-") && entry.endsWith(".md") && !live.has(entry)) {
+        try { fs.rmSync(path.join(WORKSPACE_DIR, ".opencode", "agent", entry)); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
   const config = path.join(WORKSPACE_DIR, "opencode.json");
   const tpl = readBundled("template/opencode.json");
   if (tpl && !fs.existsSync(config)) fs.writeFileSync(config, tpl);
@@ -535,8 +571,21 @@ async function ensureOpencode() {
     windowsHide: true,
   });
   child.on("error", (err) => console.error("[opencode-chat] failed to spawn opencode:", err.message));
-  child.on("exit", (code) => {
-    if (code !== 0 && code !== null) console.error(`[opencode-chat] opencode exited with code ${code}`);
+  child.on("exit", (code, signal) => {
+    if (code !== 0 && code !== null) {
+      console.error(`[opencode-chat] opencode exited unexpectedly with code ${code}`);
+      // The UI only proxies while phase === "ready"; flip to error so the
+      // setup screen offers a retry instead of serving endless 502s.
+      if (setup.phase === "ready") {
+        setPhase("error", "The AI engine stopped unexpectedly");
+        setup.error = `opencode exited with code ${code}. Press Retry to restart it — your chats are stored on disk and will reappear.`;
+      }
+    } else if (setup.phase === "ready" && !shuttingDown) {
+      // Killed by signal (or code 0) while we were serving: same handling.
+      console.error(`[opencode-chat] opencode process ended (${signal || "code 0"}) while serving`);
+      setPhase("error", "The AI engine stopped unexpectedly");
+      setup.error = "The opencode process ended. Press Retry to restart it — your chats are stored on disk and will reappear.";
+    }
   });
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
@@ -632,26 +681,265 @@ function proxyApi(req, res) {
   // server that was started elsewhere.
   if (!headers["x-opencode-directory"]) headers["x-opencode-directory"] = encodeURIComponent(WORKSPACE_DIR);
   const isSSE = (req.headers.accept || "").includes("text/event-stream");
+  // Stop requests must fail fast: a hung abort wedges the UI in
+  // "cancelling" for the full 120s. Abort should answer in ms; 15s means
+  // the engine is wedged and the client should surface that, not hang.
+  const isAbort = req.method === "POST" && /\/session\/[^/]+\/abort$/.test(url.pathname);
+  const startedAt = Date.now();
   const proxy = http.request(
-    { hostname: OPENCODE_HOST, port: opencodePort, path: url.pathname + url.search, method: req.method, headers, timeout: isSSE ? 0 : 120000 },
+    { hostname: OPENCODE_HOST, port: opencodePort, path: url.pathname + url.search, method: req.method, headers, timeout: isSSE ? 0 : isAbort ? 15000 : 120000 },
     (upstream) => {
       // SSE streams pass through untouched (no buffering)
       const outHeaders = { ...upstream.headers };
       delete outHeaders["content-length"]; // let node use chunked
+      if (isAbort || upstream.statusCode >= 400) {
+        console.log(`[opencode-chat] ${req.method} ${url.pathname} -> ${upstream.statusCode} (${Date.now() - startedAt}ms)`);
+      }
       res.writeHead(upstream.statusCode, outHeaders);
       upstream.pipe(res);
     },
   );
   proxy.on("timeout", () => {
-    proxy.destroy(new Error("opencode request timed out after 120s"));
+    console.error(`[opencode-chat] ${req.method} ${url.pathname} timed out after ${isAbort ? 15 : 120}s`);
+    proxy.destroy(new Error(`opencode request timed out after ${isAbort ? 15 : 120}s`));
   });
   proxy.on("error", (err) => {
+    console.error(`[opencode-chat] ${req.method} ${url.pathname} proxy error: ${err.message}`);
     if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
     try {
       res.end(JSON.stringify({ error: "opencode server unreachable", detail: err.message }));
     } catch { /* client already gone */ }
   });
   req.pipe(proxy);
+}
+
+/* ---------------- projects + skills http handlers ---------------- */
+
+async function handleProjects(req, res) {
+  const url = new URL(req.url, "http://x");
+  const pathname = decodeURIComponent(url.pathname);
+
+  // Session <-> project tagging. The opencode runtime owns sessions, so
+  // this is a sidecar map: { sessionId: projectId }.
+  if (pathname === "/project-sessions" && req.method === "GET") {
+    return json(res, 200, { map: readSessionsMap() });
+  }
+  if (pathname === "/project-sessions" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const sessionId = String(body.sessionId || "").slice(0, 128);
+      if (!sessionId) return json(res, 400, { error: "sessionId is required" });
+      const projectId = body.projectId == null ? null : String(body.projectId);
+      if (projectId !== null && !readProject(projectId)) return json(res, 404, { error: "project not found" });
+      const map = readSessionsMap();
+      if (projectId === null) delete map[sessionId];
+      else map[sessionId] = projectId;
+      // Bound the map so it cannot grow forever.
+      const keys = Object.keys(map);
+      if (keys.length > 2000) {
+        for (const k of keys.slice(0, keys.length - 2000)) delete map[k];
+      }
+      writeSessionsMap(map);
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  if (pathname === "/projects" && req.method === "GET") {
+    return json(res, 200, { projects: listProjects() });
+  }
+  if (pathname === "/projects" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const name = String(body.name || "").trim().slice(0, 80);
+      if (!name) return json(res, 400, { error: "name is required" });
+      const id = `${slugify(name, "project")}-${Date.now().toString(36)}`;
+      const now = Date.now();
+      const project = {
+        id,
+        name,
+        description: String(body.description || "").slice(0, 500),
+        instructions: String(body.instructions || "").slice(0, 12000),
+        icon: String(body.icon || "📁").slice(0, 8),
+        createdAt: now,
+        updatedAt: now,
+      };
+      fs.mkdirSync(path.join(projectDir(id), "files"), { recursive: true });
+      fs.writeFileSync(path.join(projectDir(id), "project.json"), JSON.stringify(project, null, 2));
+      syncProjectAgent(project);
+      return json(res, 201, { project: readProject(id) });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+
+  const projectMatch = pathname.match(/^\/projects\/([^/]+)(\/.*)?$/);
+  if (projectMatch) {
+    const id = projectMatch[1];
+    const rest = projectMatch[2] || "";
+    const existing = readProject(id);
+    if (!existing && req.method !== "DELETE") {
+      // DELETE is idempotent; everything else needs the project.
+      if (rest === "" || rest === "/files") return json(res, 404, { error: "project not found" });
+    }
+    if ((rest === "" || rest === "/") && req.method === "GET") {
+      if (!existing) return json(res, 404, { error: "project not found" });
+      return json(res, 200, { project: existing });
+    }
+    if ((rest === "" || rest === "/") && (req.method === "PUT" || req.method === "PATCH")) {
+      if (!existing) return json(res, 404, { error: "project not found" });
+      try {
+        const body = await readJsonBody(req);
+        const next = {
+          ...existing,
+          name: body.name !== undefined ? String(body.name).trim().slice(0, 80) || existing.name : existing.name,
+          description: body.description !== undefined ? String(body.description).slice(0, 500) : existing.description,
+          instructions: body.instructions !== undefined ? String(body.instructions).slice(0, 12000) : existing.instructions,
+          icon: body.icon !== undefined ? String(body.icon).slice(0, 8) || "📁" : (existing.icon || "📁"),
+          updatedAt: Date.now(),
+        };
+        delete next.files;
+        delete next.fileCount;
+        fs.writeFileSync(path.join(projectDir(id), "project.json"), JSON.stringify(next, null, 2));
+        syncProjectAgent(next);
+        return json(res, 200, { project: readProject(id) });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+    if ((rest === "" || rest === "/") && req.method === "DELETE") {
+      fs.rmSync(projectDir(id), { recursive: true, force: true });
+      removeProjectAgent(id);
+      const map = readSessionsMap();
+      let touched = false;
+      for (const [sid, pid] of Object.entries(map)) {
+        if (pid === id) { delete map[sid]; touched = true; }
+      }
+      if (touched) writeSessionsMap(map);
+      return json(res, 200, { ok: true });
+    }
+    if ((rest === "/files" || rest === "/files/") && req.method === "GET") {
+      if (!existing) return json(res, 404, { error: "project not found" });
+      return json(res, 200, { files: listProjectFiles(id) });
+    }
+    if ((rest === "/files" || rest === "/files/") && req.method === "POST") {
+      if (!existing) return json(res, 404, { error: "project not found" });
+      try {
+        const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
+        const filename = safeFileName(body.filename || body.name);
+        if (!body.contentBase64 || typeof body.contentBase64 !== "string") {
+          return json(res, 400, { error: "contentBase64 is required" });
+        }
+        const buf = Buffer.from(body.contentBase64, "base64");
+        if (!buf.length) return json(res, 400, { error: "empty file" });
+        fs.mkdirSync(path.join(projectDir(id), "files"), { recursive: true });
+        fs.writeFileSync(path.join(projectDir(id), "files", filename), buf);
+        const st = { ...existing };
+        delete st.files; delete st.fileCount;
+        st.updatedAt = Date.now();
+        fs.writeFileSync(path.join(projectDir(id), "project.json"), JSON.stringify(st, null, 2));
+        syncProjectAgent({ ...st, id });
+        return json(res, 201, { ok: true, files: listProjectFiles(id) });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+    const contentMatch = rest.match(/^\/files\/content\/(.+)$/);
+    if (contentMatch && req.method === "GET") {
+      const filename = safeFileName(contentMatch[1]);
+      const file = path.normalize(path.join(projectDir(id), "files", filename));
+      const base = path.join(projectDir(id), "files") + path.sep;
+      if (!file.startsWith(base) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+        return json(res, 404, { error: "file not found" });
+      }
+      const dl = url.searchParams.has("download");
+      res.writeHead(200, {
+        "content-type": MIME[path.extname(file).toLowerCase()] || "application/octet-stream",
+        "content-length": fs.statSync(file).size,
+        "content-disposition": `${dl ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "cache-control": "no-store",
+      });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+    const fileMatch = rest.match(/^\/files\/(.+)$/);
+    if (fileMatch && req.method === "DELETE") {
+      const filename = safeFileName(fileMatch[1]);
+      try { fs.rmSync(path.join(projectDir(id), "files", filename), { force: true }); } catch { /* ignore */ }
+      return json(res, 200, { ok: true, files: listProjectFiles(id) });
+    }
+    return json(res, 404, { error: "not found" });
+  }
+
+  // ---- skills ----
+  if (pathname === "/skills" && req.method === "GET") {
+    return json(res, 200, { skills: listSkills() });
+  }
+  if (pathname === "/skills" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req, 2 * 1024 * 1024);
+      const name = slugify(body.name || "", "");
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
+        return json(res, 400, { error: "name must be lowercase alphanumeric with single hyphens (e.g. my-skill)" });
+      }
+      const description = String(body.description || "").trim().slice(0, 1024);
+      if (!description) return json(res, 400, { error: "description is required (1-1024 chars)" });
+      const content = String(body.body ?? body.content ?? "").slice(0, MAX_SKILL_BYTES);
+      if (findSkillDir(name)) return json(res, 409, { error: `skill "${name}" already exists` });
+      const dir = skillDirFor(name, true);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "SKILL.md"), buildSkillMarkdown(name, description, content || `# ${name}\n\nDescribe when and how to use this skill.`));
+      return json(res, 201, { ok: true, skills: listSkills() });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
+  const skillMatch = pathname.match(/^\/skills\/([^/]+)(\/.*)?$/);
+  if (skillMatch) {
+    const name = skillMatch[1];
+    const rest = skillMatch[2] || "";
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*(\.disabled)?$/.test(name)) return json(res, 400, { error: "invalid skill name" });
+    const canonical = name.endsWith(".disabled") ? name.slice(0, -9) : name;
+    if ((rest === "" || rest === "/") && (req.method === "PUT" || req.method === "PATCH")) {
+      const dir = findSkillDir(canonical);
+      if (!dir) return json(res, 404, { error: "skill not found" });
+      try {
+        const body = await readJsonBody(req, 2 * 1024 * 1024);
+        const current = parseSkillFile(path.join(dir, "SKILL.md"), !dir.endsWith(".disabled"));
+        const description = body.description !== undefined ? String(body.description).trim().slice(0, 1024) : current.description;
+        if (!description) return json(res, 400, { error: "description must not be empty" });
+        const content = body.body !== undefined ? String(body.body) : (body.content !== undefined ? String(body.content) : current.body);
+        fs.writeFileSync(path.join(dir, "SKILL.md"), buildSkillMarkdown(canonical, description, content));
+        return json(res, 200, { ok: true, skills: listSkills() });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+    if ((rest === "" || rest === "/") && req.method === "DELETE") {
+      const dir = findSkillDir(canonical);
+      if (dir) fs.rmSync(dir, { recursive: true, force: true });
+      return json(res, 200, { ok: true, skills: listSkills() });
+    }
+    if (rest === "/toggle" && req.method === "POST") {
+      const dir = findSkillDir(canonical);
+      if (!dir) return json(res, 404, { error: "skill not found" });
+      try {
+        const body = await readJsonBody(req);
+        const wantEnabled = body.enabled !== undefined ? !!body.enabled : dir.endsWith(".disabled");
+        const isEnabled = !dir.endsWith(".disabled");
+        if (wantEnabled !== isEnabled) {
+          fs.renameSync(dir, skillDirFor(canonical, wantEnabled));
+        }
+        return json(res, 200, { ok: true, skills: listSkills() });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+    return json(res, 404, { error: "not found" });
+  }
+
+  return false;
 }
 
 function handle(req, res) {
@@ -671,6 +959,17 @@ function handle(req, res) {
   if (req.url === "/setup/open-workspace" && req.method === "POST") {
     if (process.platform === "win32") spawn("explorer.exe", [WORKSPACE_DIR], { detached: true, stdio: "ignore" }).unref();
     return json(res, 200, { ok: true });
+  }
+  if (req.url.startsWith("/projects") || req.url.startsWith("/project-sessions") || req.url.startsWith("/skills")) {
+    Promise.resolve(handleProjects(req, res)).then((handled) => {
+      if (handled === false) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    }).catch((e) => {
+      if (!res.headersSent) json(res, 500, { error: String(e?.message || e) });
+    });
+    return;
   }
   return serveStatic(req, res);
 }
@@ -747,8 +1046,39 @@ function quitWhenWindowsClosed() {
 
 /* ---------------- boot ---------------- */
 
+let shuttingDown = false;
+let healthMisses = 0;
+
+// The engine can die after boot (crash, OOM, killed externally). Without
+// this, phase stays "ready" forever and every /api call 502s with no
+// recovery path. Three consecutive missed health checks flip to error so
+// the UI offers a retry; transient blips (account reconnects) ride through.
+function watchEngineHealth() {
+  setInterval(async () => {
+    if (shuttingDown || setup.phase !== "ready") {
+      healthMisses = 0;
+      return;
+    }
+    try {
+      if (await isOpencodeUp()) {
+        healthMisses = 0;
+        return;
+      }
+    } catch {
+      /* count as a miss below */
+    }
+    if (++healthMisses >= 3) {
+      console.error("[opencode-chat] lost contact with the AI engine (3 missed health checks)");
+      setPhase("error", "Lost connection to the AI engine");
+      setup.error = "The opencode process stopped responding. Press Retry to restart it — your chats are stored on disk and will reappear.";
+      healthMisses = 0;
+    }
+  }, 15000).unref();
+}
+
 function bootOpencode() {
   setup.error = null;
+  healthMisses = 0;
   ensureOpencode()
     .then(() => {
       setPhase("ready", "Ready", 1);
@@ -807,9 +1137,11 @@ async function start() {
     else if (SHOULD_OPEN) openDefaultBrowser(url);
   });
   bootOpencode();
+  watchEngineHealth();
 }
 
 function shutdown() {
+  shuttingDown = true;
   if (child) {
     try {
       child.kill();
