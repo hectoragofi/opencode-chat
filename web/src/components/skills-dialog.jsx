@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckIcon,
   Loader2Icon,
   PlusIcon,
   SparklesIcon,
   Trash2Icon,
+  UploadIcon,
   XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import {
   fetchSkills,
   toggleSkill,
   updateSkill,
+  uploadSkill,
 } from "../skills.js";
 
 const input =
@@ -39,6 +41,8 @@ export function SkillsDialog({ onClose }) {
   const [body, setBody] = useState(SKILL_TEMPLATE);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
 
   const load = async () => {
     try {
@@ -119,6 +123,29 @@ export function SkillsDialog({ onClose }) {
     }
   };
 
+  const onPickFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || uploading) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const text = await file.text();
+      if (!text.trim()) throw new Error("empty file");
+      // Unicode-safe base64: the server decodes and parses frontmatter
+      // itself, so any .md works (SKILL.md included).
+      const bytes = new TextEncoder().encode(text);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const next = await uploadSkill({ filename: file.name, contentBase64: btoa(bin) });
+      setSkills(next);
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const editing = creating || selected;
 
   return (
@@ -153,6 +180,22 @@ export function SkillsDialog({ onClose }) {
                   {skills.length} skill{skills.length === 1 ? "" : "s"}
                 </span>
                 <span className="flex-1" />
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".md,.markdown,.txt,text/markdown,text/plain"
+                  className="hidden"
+                  onChange={onPickFile}
+                />
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                  className="flex h-8 items-center gap-1.5 rounded-full border border-border/60 px-3.5 text-xs font-medium transition hover:bg-foreground/[0.05] disabled:opacity-40"
+                  title="Upload a SKILL.md file — name comes from the filename or frontmatter"
+                >
+                  {uploading ? <Loader2Icon className="size-3.5 animate-spin" /> : <UploadIcon className="size-3.5" />}
+                  {uploading ? "Uploading…" : "Upload"}
+                </button>
                 <button
                   onClick={openCreate}
                   className="flex h-8 items-center gap-1.5 rounded-full bg-foreground px-3.5 text-xs font-medium text-background transition hover:opacity-90"

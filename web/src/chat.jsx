@@ -58,6 +58,7 @@ import {
 } from "./components/composer";
 import { ApprovalCard } from "./components/approval-card";
 import { ModelPicker } from "./components/model-picker";
+import { THINKING_LEVELS, customLevelEntries, offeredVariantSet } from "./thinking.js";
 import {
   EmptyState,
   EmptyStateGreeting,
@@ -1486,6 +1487,84 @@ export function ModelMenu({ model, onPick, allModels, connected }) {
                   onSelect={pick}
                 />
               )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- thinking menu (reasoning effort variant) ---------------- */
+
+export function ThinkingMenu({ thinking, onPick, supported = null }) {
+  const [open, setOpen] = useState(false);
+  const allEntries = [...THINKING_LEVELS, ...customLevelEntries(supported)];
+  const current = allEntries.find((l) => l.id === thinking) || THINKING_LEVELS[0];
+  // null = variants unknown (fetch failed / engine reports none): show everything.
+  const offered = offeredVariantSet(supported);
+  const isOffered = (id) => !offered || offered.has(String(id).toLowerCase());
+  const currentUnsupported = !isOffered(thinking);
+  return (
+    <div className="relative">
+      <button
+        className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] text-foreground/60 transition hover:bg-foreground/[0.05] hover:text-foreground"
+        onClick={() => setOpen((o) => !o)}
+        title={currentUnsupported ? `“${current.label}” isn't offered by this model — messages send without it` : "Reasoning effort (opencode variant), filtered to what this model offers."}
+      >
+        <BrainIcon className="size-4 shrink-0" />
+        <span className="max-sm:hidden">{current.id === "off" ? "Thinking" : current.label}</span>
+        <span className="sm:hidden">{current.id === "off" ? "" : current.label}</span>
+        {!currentUnsupported ? null : <span className="size-1.5 rounded-full bg-amber-400" title="Unsupported by this model" />}
+        <ChevronDownIcon className="size-3 shrink-0 text-foreground/40" />
+      </button>
+      {!open ? null : (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="fade-in zoom-in-95 animate-in absolute left-0 top-full z-20 mt-1 w-60 duration-150">
+            <div className="flex flex-col gap-0.5 rounded-2xl border border-border/60 bg-popover p-1.5 shadow-xl">
+              {allEntries.map((l) => {
+                const active = l.id === current.id;
+                const enabled = isOffered(l.id);
+                return (
+                  <button
+                    key={l.id}
+                    disabled={!enabled}
+                    onClick={() => {
+                      onPick(l.id);
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] transition",
+                      active ? "bg-foreground/[0.07]" : enabled ? "hover:bg-foreground/[0.04]" : "opacity-40",
+                    )}
+                    title={enabled ? l.hint : "Not offered by this model"}
+                  >
+                    <span className="flex size-4 shrink-0 items-center justify-center">
+                      {active ? <CheckIcon className="size-3.5" /> : null}
+                    </span>
+                    <span className="flex-1 font-medium">{l.label}</span>
+                    <span className="text-[11px] text-foreground/40">{enabled ? l.hint : "n/a"}</span>
+                  </button>
+                );
+              })}
+              {!currentUnsupported ? null : (
+                <p className="rounded-xl bg-amber-400/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-500">
+                  “{current.label}” isn't offered by this model — messages send without it until you pick a listed level.
+                </p>
+              )}
+              <p className="px-2.5 pb-1 pt-1.5 text-[11px] leading-relaxed text-foreground/40">
+                {supported === null ? (
+                  <>Couldn't load this model's variants — showing all levels. </>
+                ) : supported.some((v) =>
+                  THINKING_LEVELS.some((l) => l.id !== "off" && l.id === String(v).toLowerCase()),
+                ) ? (
+                  <>Only the highlighted levels are offered by this model. </>
+                ) : (
+                  <>Custom variants come from this model's opencode.json entry — fixed levels still apply. </>
+                )}
+                Sent as the opencode variant on every message.
+              </p>
             </div>
           </div>
         </>

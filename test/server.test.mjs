@@ -266,4 +266,33 @@ describe("server", () => {
       assert.ok(!JSON.parse(gone.text).skills.some((s) => s.skill === name));
     }
   });
+
+  it("supports skill file upload (SKILL.md with frontmatter)", async () => {
+    const name = `upload-${Date.now().toString(36)}`;
+    const md = `---\nname: ${name}\ndescription: uploaded by smoke test\n---\n\n## Do it\n\nDo the thing.\n`;
+    try {
+      const made = await request(port, "POST", "/skills/upload", {
+        filename: `${name}.md`,
+        contentBase64: Buffer.from(md).toString("base64"),
+      });
+      assert.equal(made.status, 201);
+      const skills = JSON.parse(made.text).skills;
+      assert.ok(skills.some((s) => s.skill === name && s.enabled));
+
+      const dup = await request(port, "POST", "/skills/upload", {
+        filename: `${name}.md`,
+        contentBase64: Buffer.from(md).toString("base64"),
+      });
+      assert.equal(dup.status, 409);
+
+      // A bare SKILL.md with no name anywhere is rejected with a clear 400.
+      const nameless = await request(port, "POST", "/skills/upload", {
+        filename: "SKILL.md",
+        contentBase64: Buffer.from("## No frontmatter\n\nJust body.\n").toString("base64"),
+      });
+      assert.equal(nameless.status, 400);
+    } finally {
+      await request(port, "DELETE", `/skills/${name}`);
+    }
+  });
 });

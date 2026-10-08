@@ -946,6 +946,59 @@ async function handleProjects(req, res) {
       return json(res, 400, { error: e.message });
     }
   }
+  if (pathname === "/skills/upload" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req, 2 * 1024 * 1024);
+      const rawB64 = String(body.contentBase64 || "");
+      if (!rawB64) return json(res, 400, { error: "contentBase64 is required" });
+      let text = "";
+      try {
+        text = Buffer.from(rawB64, "base64").toString("utf8");
+      } catch {
+        return json(res, 400, { error: "contentBase64 is not valid base64" });
+      }
+      if (!text.trim()) return json(res, 400, { error: "empty file" });
+      text = text.slice(0, MAX_SKILL_BYTES);
+      // Reuse the SKILL.md frontmatter parser: `name:` / `description:` win,
+      // otherwise fall back to the uploaded filename and an explicit description.
+      const filename = String(body.filename || "skill.md");
+      const stem = filename.replace(/\\/g, "/").split("/").pop() || "skill.md";
+      const withoutExt = stem.replace(/\.(md|markdown|txt)$/i, "");
+      const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+      let fmName = "";
+      let fmDescription = "";
+      let fmBody = "";
+      if (fm) {
+        fmBody = (fm[2] || "").trim();
+        for (const line of fm[1].split("\n")) {
+          const idx = line.indexOf(":");
+          if (idx < 0) continue;
+          const k = line.slice(0, idx).trim().toLowerCase();
+          const v = line.slice(idx + 1).trim();
+          if (k === "name") fmName = v;
+          if (k === "description") fmDescription = v;
+        }
+      }
+      const explicitName = String(body.name || "").trim();
+      const explicitDescription = String(body.description || "").trim().slice(0, 1024);
+      // A bare SKILL.md carries no name in its filename — it must name itself.
+      const fallbackStem = /^skill$/i.test(withoutExt) ? "" : withoutExt;
+      const name = slugify(fmName || explicitName || fallbackStem, "");
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
+        return json(res, 400, { error: "could not determine a skill name: rename the file to <my-skill>.md, add `name:` frontmatter, or pass \"name\"" });
+      }
+      const description = (explicitDescription || fmDescription).slice(0, 1024);
+      if (!description) return json(res, 400, { error: "description is required: add `description:` frontmatter or pass \"description\"" });
+      const content = (fm ? fmBody : text.trim()).slice(0, MAX_SKILL_BYTES) || `# ${name}\n\nDescribe when and how to use this skill.`;
+      if (findSkillDir(name)) return json(res, 409, { error: `skill "${name}" already exists` });
+      const dir = skillDirFor(name, true);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "SKILL.md"), buildSkillMarkdown(name, description, content));
+      return json(res, 201, { ok: true, skill: name, skills: listSkills() });
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+  }
   const skillMatch = pathname.match(/^\/skills\/([^/]+)(\/.*)?$/);
   if (skillMatch) {
     const name = skillMatch[1];

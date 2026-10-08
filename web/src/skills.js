@@ -48,6 +48,14 @@ export async function toggleSkill(name, enabled) {
   return data.skills || [];
 }
 
+export async function uploadSkill({ filename, contentBase64, name, description }) {
+  const data = await req("/skills/upload", {
+    method: "POST",
+    body: { filename, contentBase64, name, description },
+  });
+  return data.skills || [];
+}
+
 export const SKILL_TEMPLATE = `## What I do
 
 - Describe the task this skill handles in 2-4 bullets.

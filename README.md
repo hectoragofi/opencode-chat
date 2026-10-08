@@ -59,8 +59,9 @@ The backend requires zero manual configuration: on first launch it provisions th
 | Rich message rendering | GFM tables, KaTeX math, fenced code blocks, and embedded generated images. |
 | Two personas | **Chat:** general-purpose assistant with document-building skills. **Agent:** full opencode build agent for engineering tasks. |
 | Projects | Claude-style groups with shared custom instructions and knowledge files; chats inside a project use a dedicated agent. |
-| Skills | Reusable `SKILL.md` capabilities (Claude/opencode format) the assistant loads on demand; managed from the ✨ button. |
+| Skills | Reusable `SKILL.md` capabilities (Claude/opencode format) the assistant loads on demand; managed from the ✨ button — create, edit, or upload `.md` files. |
 | Model picker | Browse and switch models on demand. Supports free-tier models, OpenCode Zen, and custom provider/model identifiers. |
+| Thinking levels | Reasoning-effort selector (Off / None / Minimal / Low / Medium / High / XHigh / Max) passed as the opencode variant on every message. |
 | Guided onboarding | First-run setup flow for connecting accounts; fully skippable for immediate use with free models. |
 
 ### Document Generation
@@ -228,14 +229,31 @@ assistant consults when relevant — select as many files as you like, any size,
 
 Skills are reusable instruction packs in the same `SKILL.md` format Claude Code and opencode
 use, loaded on demand by the agent's native `skill` tool. Open **Skills** right under New chat
-in the sidebar to list, create, edit, enable/disable, or delete skills.
+in the sidebar to list, create, edit, enable/disable, delete, or **upload** skills.
 
+- **Upload**: click Upload and pick any `.md` file. The skill name comes from the
+  filename (`my-skill.md`) or the `name:` frontmatter field, and the description
+  from `description:` frontmatter — a bare `SKILL.md` must name itself in frontmatter.
+  Duplicates are rejected with a 409 so nothing is silently overwritten.
 - Skills live in the workspace at `.opencode/skills/<name>/SKILL.md` — copy folders back and
   forth with Claude Code freely.
 - Disabling a skill moves it to `<name>.disabled`, hiding it from the assistant without
   deleting it.
 - Two skills ship by default (`document-polish`, `spreadsheet-analyst`); they are seeded from
   `template/skills/` on first run and never overwrite your edits.
+
+### Thinking levels
+
+The brain icon next to the model picker selects reasoning effort. It is sent as the
+opencode `variant` on every message (`Off` sends no variant and keeps the model default).
+Levels are `None / Minimal / Low / Medium / High / XHigh / Max` — the full OpenRouter-style
+set from the [opencode variants docs](https://opencode.ai/docs/models/#variants).
+The picker queries `GET /api/model` for the current model's variants. The engine only
+reports user-defined custom variants there (from `opencode.json`), so those are appended
+to the menu as extra entries; if the endpoint ever names fixed effort levels, the menu
+filters to just those. A stale pick after switching models (e.g. a custom variant the
+new model lacks) is skipped on send — never a hard error — with an amber dot + warning
+until you pick a listed level. The choice persists in the browser (`oc-chat:thinking`).
 
 ## Desktop Application
 

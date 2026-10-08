@@ -14,9 +14,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { field } from "./components/surfaces";
-import { ChatSidebar, ChatThread, ModelMenu, indexThreadItems } from "./chat.jsx";
+import { ChatSidebar, ChatThread, ModelMenu, ThinkingMenu, indexThreadItems } from "./chat.jsx";
 import { chatAttachmentAdapter } from "./attachments.jsx";
 import { DEFAULT_MODEL, FREE_MODELS, fetchAllModels, load, save } from "./models.js";
+import { fetchModelVariants, loadThinking, offeredVariantSet, saveThinking, supportedVariants } from "./thinking.js";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { SettingsIcon } from "lucide-react";
 import { AccountButton, AccountsDialog } from "./accounts.jsx";
 import { Onboarding, useSetupStatus } from "./onboarding.jsx";
@@ -262,6 +264,7 @@ export function App() {
 
 function ChatApp() {
   const [model, setModel] = useState(() => load("model", DEFAULT_MODEL));
+  const [thinking, setThinking] = useState(() => loadThinking());
   // "chat" = ChatGPT-style agent defined in workspace/.opencode/agent/chat.md
   // (can create PDFs/Office files); older saves stored "plan".
   const [agent, setAgent] = useState(() => {
@@ -278,6 +281,7 @@ function ChatApp() {
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => loadActiveProject());
   const [sessionMap, setSessionMap] = useState({});
+  const [variantsMap, setVariantsMap] = useState(null); // "provider/model" -> string[] | null while loading
   const [projectDialog, setProjectDialog] = useState(null); // null | { initial?: project }
   const [projectSettings, setProjectSettings] = useState(null); // project object
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -331,6 +335,7 @@ function ChatApp() {
 
   useEffect(() => save("model", model), [model]);
   useEffect(() => save("agent", agent), [agent]);
+  useEffect(() => saveThinking(thinking), [thinking]);
   // Exposed for the composer's context ring (session tokens vs model limit).
   useEffect(() => {
     try {
@@ -341,7 +346,7 @@ function ChatApp() {
     }
   }, [model, allModels]);
 
-  const refreshModels = () =>
+  const refreshModels = () => {
     fetchAllModels()
       .then(({ models, connected }) => {
         setConnected(connected);
@@ -354,14 +359,62 @@ function ChatApp() {
         }
       })
       .catch(() => {});
+    // Variants ride along separately: failure leaves the picker on the full
+    // list (unknown state) rather than blocking the model list.
+    fetchModelVariants().then(setVariantsMap).catch(() => setVariantsMap({}));
+  };
   useEffect(() => {
     refreshModels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const supported = supportedVariants(model, variantsMap);
+
+  // Live refs so the wrapped client below stays referentially stable:
+  // changing thinking/model must not recreate the SDK client (that would
+  // tear down the runtime and reload every thread).
+  const thinkingRef = useRef(thinking);
+  const supportedRef = useRef(supported);
+  thinkingRef.current = thinking;
+  supportedRef.current = supported;
+
+  const ocClient = useMemo(() => {
+    const base = createOpencodeClient({ baseUrl: window.location.origin + "/api" });
+    // react-opencode@0.2 has no variant plumbing, so inject it here: every
+    // prompt carries `variant` (opencode reasoning effort). A Proxy is
+    // required — the SDK client exposes `session`/`experimental`/… as
+    // prototype getters, so object spread silently drops them (that broke
+    // every engine call whenever thinking wasn't Off).
+    const PROMPT_METHODS = new Set(["create", "prompt", "promptAsync", "command"]);
+    const bind = (target, v) => (typeof v === "function" ? v.bind(target) : v);
+    const wrappedSession = new Proxy(base.session, {
+      get(ts, prop) {
+        const v = Reflect.get(ts, prop, ts);
+        if (PROMPT_METHODS.has(prop) && typeof v === "function") {
+          return (params, opts) => {
+            const t = thinkingRef.current;
+            // Skip a stale pick the model provably lacks (e.g. a custom
+            // variant after switching models): sending it hard-errors.
+            const offered = offeredVariantSet(supportedRef.current);
+            const ok = t && t !== "off" && (!offered || offered.has(String(t).toLowerCase()));
+            return v.call(ts, ok ? { ...(params || {}), variant: t } : params, opts);
+          };
+        }
+        return bind(ts, v);
+      },
+    });
+    return new Proxy(base, {
+      get(t, prop) {
+        if (prop === "session") return wrappedSession;
+        return bind(t, Reflect.get(t, prop, t));
+      },
+    });
+  }, []);
+
   const options = useMemo(
     () => ({
       baseUrl: window.location.origin + "/api",
+      client: ocClient,
       defaultModel: model,
       // Inside a project, chats run on the generated `project-<id>` agent
       // (base chat behaviour + project instructions + knowledge files).
@@ -369,7 +422,7 @@ function ChatApp() {
       adapters: { attachments: chatAttachmentAdapter },
       onError: (e) => setError(String(e?.message || e)),
     }),
-    [model, effectiveAgent],
+    [model, effectiveAgent, ocClient],
   );
   const runtime = useOpenCodeRuntime(options);
 
@@ -530,6 +583,7 @@ function ChatApp() {
               allModels={allModels}
               connected={connected}
             />
+            <ThinkingMenu thinking={thinking} onPick={setThinking} supported={supported} />
             <div className="flex-1" />
             <ExportButton />
             <ShareButton />
